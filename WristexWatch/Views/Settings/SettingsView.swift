@@ -1,22 +1,36 @@
 import SwiftUI
 
 public struct SettingsView: View {
-    @ObservedObject private var network = NetworkManager.shared
+    @ObservedObject private var sshManager = SSHManager.shared
     
-    @State private var localBaseURL: String = ""
-    @State private var localAuthToken: String = ""
-    @State private var showSavedAlert = false
+    @State private var localHost: String = ""
+    @State private var localUsername: String = ""
+    @State private var localPortText: String = ""
+    @State private var localWorkspacePath: String = ""
+    @State private var localPassword: String = ""
     
     public init() {}
     
     public var body: some View {
         Form {
-            Section(header: Text("Agent Backend").font(.system(.footnote, design: .rounded)).foregroundColor(.indigo)) {
-                TextField("Server URL", text: $localBaseURL, prompt: Text("http://192.168.1..."))
+            Section(header: Text("SSH Remote Host").font(.system(.footnote, design: .rounded)).foregroundColor(.indigo)) {
+                TextField("IP or Hostname", text: $localHost, prompt: Text("localhost"))
                     .textContentType(.URL)
                     .autocorrectionDisabled()
                 
-                TextField("Bearer Token", text: $localAuthToken, prompt: Text("Optional Token"))
+                TextField("Username", text: $localUsername, prompt: Text("amir"))
+                    .textContentType(.username)
+                    .autocorrectionDisabled()
+                
+                TextField("Port", text: $localPortText, prompt: Text("22"))
+                    .keyboardType(.numberPad)
+                
+                TextField("Workspace Path", text: $localWorkspacePath, prompt: Text("/path/to/project"))
+                    .autocorrectionDisabled()
+            }
+            
+            Section(header: Text("Security").font(.system(.footnote, design: .rounded)).foregroundColor(.orange)) {
+                SecureField("Password / Key Phrase", text: $localPassword, prompt: Text("Enter password"))
                     .autocorrectionDisabled()
             }
             
@@ -24,8 +38,8 @@ public struct SettingsView: View {
                 Button(action: saveSettings) {
                     HStack {
                         Spacer()
-                        Image(systemName: "checkmark.circle.fill")
-                        Text("Save Configuration")
+                        Image(systemName: "bolt.horizontal.fill")
+                        Text("Connect Remote")
                         Spacer()
                     }
                     .font(.system(.body, design: .rounded))
@@ -39,35 +53,25 @@ public struct SettingsView: View {
                     )
                 )
             }
-            
-            Section(header: Text("Info").font(.system(.footnote, design: .rounded))) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Wristex watchOS v1.0")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text("Connect to your agent host to manage workspace tasks, dictate instructions, approve tools, and execute git commands.")
-                        .font(.system(size: 10, weight: .light, design: .rounded))
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 4)
-            }
         }
-        .navigationTitle("Settings")
+        .navigationTitle("SSH Settings")
         .onAppear {
-            localBaseURL = network.baseURL
-            localAuthToken = network.authToken
+            localHost = sshManager.host
+            localUsername = sshManager.username
+            localPortText = String(sshManager.port)
+            localWorkspacePath = sshManager.remoteWorkspacePath
+            localPassword = sshManager.password
         }
     }
     
     private func saveSettings() {
-        // Save to Shared Network Manager
-        network.baseURL = localBaseURL
-        network.authToken = localAuthToken
+        sshManager.host = localHost
+        sshManager.username = localUsername
+        sshManager.port = Int(localPortText) ?? 22
+        sshManager.remoteWorkspacePath = localWorkspacePath
+        sshManager.password = localPassword
         
         HapticManager.shared.playSuccess()
-        
-        // Show short visual feedback
-        showSavedAlert = true
     }
 }
 

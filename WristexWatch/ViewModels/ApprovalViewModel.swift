@@ -7,7 +7,7 @@ public final class ApprovalViewModel: ObservableObject {
     @Published public var isLoading = false
     @Published public var errorMessage: String? = nil
     
-    private let network = NetworkManager.shared
+    private let ssh = SSHManager.shared
     private var pollingTask: Task<Void, Never>? = nil
     
     public init() {}
@@ -15,7 +15,19 @@ public final class ApprovalViewModel: ObservableObject {
     public func loadApprovals() async {
         errorMessage = nil
         do {
-            self.approvals = try await network.fetchApprovals()
+            let cmd = """
+            mkdir -p ~/.codex && \
+            if [ ! -f ~/.codex/pending_approvals.json ]; then \
+              echo '[]' > ~/.codex/pending_approvals.json; \
+            fi && \
+            cat ~/.codex/pending_approvals.json
+            """
+            let stdout = try await ssh.executeCommand(cmd)
+            guard let data = stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            let decoder = JSONDecoder()
+            self.approvals = try decoder.decode([ApprovalRequest].self, from: data)
         } catch {
             self.errorMessage = "Failed to load approvals: \(error.localizedDescription)"
         }
@@ -25,7 +37,6 @@ public final class ApprovalViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         
-        // Play haptic for response action
         if approve {
             HapticManager.shared.playSuccess()
         } else {
@@ -33,12 +44,36 @@ public final class ApprovalViewModel: ObservableObject {
         }
         
         do {
-            let success = try await network.respondToApproval(id: id, approved: approve)
-            if success {
-                // Optimistically remove from list
+            let cmd = """
+            python3 -c "
+            import json, os, datetime
+            path = os.path.expanduser('~/.codex/pending_approvals.json')
+            resp_dir = os.path.expanduser('~/.codex/responses')
+            
+            # 1. Update pending list
+            try:
+                approvals = json.load(open(path))
+            except:
+                approvals = []
+            
+            filtered = [a for a in approvals if a['id'] != '\(id)']
+            with open(path, 'w') as f:
+                json.dump(filtered, f)
+                
+            # 2. Write response log
+            os.makedirs(resp_dir, exist_ok=True)
+            resp_file = os.path.join(resp_dir, '\(id).json')
+            with open(resp_file, 'w') as f:
+                json.dump({'approved': \(approve ? "True" : "False"), 'timestamp': datetime.datetime.utcnow().isoformat() + 'Z'}, f)
+                
+            print('success')
+            "
+            """
+            let stdout = try await ssh.executeCommand(cmd)
+            if stdout.contains("success") {
                 self.approvals.removeAll { $0.id == id }
             } else {
-                self.errorMessage = "Action response was not confirmed by agent server."
+                self.errorMessage = "Response execution failed: \(stdout)"
             }
         } catch {
             self.errorMessage = "Error sending decision: \(error.localizedDescription)"
@@ -52,7 +87,7 @@ public final class ApprovalViewModel: ObservableObject {
             await loadApprovals()
             
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000) // Poll every 2 seconds for prompts
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if Task.isCancelled { break }
                 await loadApprovals()
             }

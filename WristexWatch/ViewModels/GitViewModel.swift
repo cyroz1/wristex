@@ -9,7 +9,7 @@ public final class GitViewModel: ObservableObject {
     @Published public var errorMessage: String? = nil
     @Published public var actionFeedbackMessage: String? = nil
     
-    private let network = NetworkManager.shared
+    private let ssh = SSHManager.shared
     
     public init() {}
     
@@ -17,9 +17,54 @@ public final class GitViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         do {
-            self.gitStatus = try await network.fetchGitStatus()
+            let cmd = """
+            cd "\(ssh.remoteWorkspacePath)" && python3 -c "
+            import subprocess, json
+            try:
+                branch = subprocess.check_output(['git', 'branch', '--show-current']).decode('utf-8').strip()
+                
+                # Check ahead/behind count
+                try:
+                    ab_out = subprocess.check_output(['git', 'rev-list', '--left-right', '--count', 'HEAD...@{u}'], stderr=subprocess.DEVNULL).decode('utf-8').strip()
+                    ahead, behind = map(int, ab_out.split())
+                except:
+                    ahead, behind = 0, 0
+                
+                # Get modified and untracked files
+                status_out = subprocess.check_output(['git', 'status', '--porcelain']).decode('utf-8').splitlines()
+                modified = []
+                untracked = []
+                for line in status_out:
+                    if line.startswith('??'):
+                        untracked.append(line[3:])
+                    else:
+                        modified.append(line[3:])
+                print(json.dumps({
+                    'branch': branch,
+                    'modifiedFiles': modified,
+                    'untrackedFiles': untracked,
+                    'ahead': ahead,
+                    'behind': behind
+                }))
+            except Exception as e:
+                print(json.dumps({
+                    'branch': 'error',
+                    'modifiedFiles': [],
+                    'untrackedFiles': [],
+                    'ahead': 0,
+                    'behind': 0,
+                    'error': str(e)
+                }))
+            "
+            """
+            let stdout = try await ssh.executeCommand(cmd)
+            guard let data = stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            let decoder = JSONDecoder()
+            self.gitStatus = try decoder.decode(GitStatus.self, from: data)
         } catch {
-            self.errorMessage = "Failed to load git status: \(error.localizedDescription)"
+            self.errorMessage = "SSH status failed: \(error.localizedDescription)"
         }
         isLoading = false
     }
@@ -44,17 +89,23 @@ public final class GitViewModel: ObservableObject {
         HapticManager.shared.playClick()
         
         do {
-            let (success, feedback) = try await network.executeGitAction(action: action, commitMessage: commitMessage)
-            if success {
-                actionFeedbackMessage = feedback
-                HapticManager.shared.playSuccess()
-                
-                // Reload git status immediately to reflect updates
-                await loadGitStatus()
-            } else {
-                errorMessage = "Action failed: \(feedback)"
-                HapticManager.shared.playFailure()
+            let cmd: String
+            switch action {
+            case .pull:
+                cmd = "cd \"\(ssh.remoteWorkspacePath)\" && git pull"
+            case .push:
+                cmd = "cd \"\(ssh.remoteWorkspacePath)\" && git push"
+            case .commit:
+                let msgEscaped = (commitMessage ?? "Automated commit from Wristex").replacingOccurrences(of: "'", with: "'\\''")
+                cmd = "cd \"\(ssh.remoteWorkspacePath)\" && git add . && git commit -m '\(msgEscaped)'"
             }
+            
+            let stdout = try await ssh.executeCommand(cmd)
+            actionFeedbackMessage = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            HapticManager.shared.playSuccess()
+            
+            // Reload status to reflect changes
+            await loadGitStatus()
         } catch {
             errorMessage = "Git action failed: \(error.localizedDescription)"
             HapticManager.shared.playFailure()
