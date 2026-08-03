@@ -5,6 +5,7 @@ import Foundation
 public final class ChatViewModel: ObservableObject {
     @Published public private(set) var messages: [ChatMessage]
     @Published public private(set) var isSending = false
+    @Published public private(set) var isVoiceRecording = false
     @Published public var errorMessage: String?
     @Published public private(set) var modelName: String
 
@@ -65,5 +66,41 @@ public final class ChatViewModel: ObservableObject {
         store.clear()
         errorMessage = nil
         HapticManager.shared.playClick()
+    }
+
+    public func startVoiceTranscription() async -> Bool {
+        guard !isSending, !isVoiceRecording else { return false }
+        do {
+            try await chat.startVoiceCapture()
+            isVoiceRecording = true
+            errorMessage = nil
+            HapticManager.shared.playStart()
+            return true
+        } catch {
+            errorMessage = "GPT transcription unavailable: " + error.localizedDescription
+            HapticManager.shared.playFailure()
+            return false
+        }
+    }
+
+    public func stopVoiceTranscription() async -> String? {
+        guard isVoiceRecording else { return nil }
+        isVoiceRecording = false
+        do {
+            let transcript = try await chat.stopVoiceCapture()
+            HapticManager.shared.playStop()
+            return transcript
+        } catch {
+            errorMessage = "GPT transcription failed: " + error.localizedDescription
+            HapticManager.shared.playFailure()
+            return nil
+        }
+    }
+
+    public func cancelVoiceTranscription() {
+        guard isVoiceRecording else { return }
+        isVoiceRecording = false
+        chat.cancelVoiceCapture()
+        HapticManager.shared.playStop()
     }
 }

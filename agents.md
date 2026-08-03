@@ -23,6 +23,7 @@ Chat mode is a separate direct HTTPS integration in `WristexWatch/Services/ChatS
 1. It calls the OpenAI Responses API directly from the watch.
 2. The API key is stored in Keychain and never placed in `UserDefaults` or sent through the Codex SSH channel.
 3. Local Chat history is included in each stateless request and streamed text is rendered incrementally.
+4. Chat microphone audio uses the OpenAI file transcription endpoint with `gpt-transcribe`; native watchOS dictation is the fallback.
 
 Do not reintroduce REST endpoints, fake remote JSON files, or simulated agent replies. `ThreadStore` is only a local cache and must never replace the Codex app server as the source of truth.
 The Chat API is an intentional separate integration and must not be used as a substitute for Codex thread state, approvals, goals, or Git actions.

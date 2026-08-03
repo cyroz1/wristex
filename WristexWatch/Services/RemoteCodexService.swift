@@ -30,7 +30,7 @@ enum CodexAppServerError: LocalizedError {
 }
 
 @MainActor
-private final class WatchVoiceCapture {
+final class WatchVoiceCapture {
     private let audioEngine = AVAudioEngine()
     private var audioSession: AVAudioSession?
 

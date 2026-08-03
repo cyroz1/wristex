@@ -14,7 +14,7 @@ Wristex is a watchOS remote control for Codex running on an Oracle Cloud Linux s
 - Review and answer app-server approval requests for commands, file changes, user input, and MCP elicitation.
 - Dictate with Codex realtime transcription over SSH, with native watchOS dictation fallback.
 - Inspect remote Git status and run pull, commit, and push actions.
-- Switch to Chat mode for a separate OpenAI API conversation with streamed replies.
+- Switch to Chat mode for a separate OpenAI API conversation with streamed replies and GPT transcription.
 - Keep Chat history on the watch; configure the API key and model in Settings.
 - Cache the last known threads and messages locally for short offline periods.
 
@@ -37,7 +37,7 @@ Apple Watch
 
 `SSHManager` handles authentication, host-key fingerprint pinning, one-shot commands, and the long-lived bidirectional shell used by the app server. `RemoteCodexService` is the app-server JSON-RPC client. Codex remains the source of truth; `ThreadStore` only caches the last successful data in the watch app’s local preferences.
 
-`ChatService` is intentionally separate from Codex: it sends the local Chat transcript directly to OpenAI’s Responses API, streams `response.output_text.delta` events, and keeps the API key in Keychain. Chat does not create Codex threads or receive Codex approvals. See the [Responses API](https://platform.openai.com/docs/api-reference/responses) and [streaming events](https://platform.openai.com/docs/api-reference/responses-streaming) documentation for the upstream protocol.
+`ChatService` is intentionally separate from Codex: it sends the local Chat transcript directly to OpenAI’s Responses API, streams `response.output_text.delta` events, and keeps the API key in Keychain. Chat microphone recordings are wrapped as WAV and sent to the [file transcription endpoint](https://developers.openai.com/api/docs/guides/speech-to-text) with `gpt-transcribe`; native watchOS dictation remains the fallback. Chat does not create Codex threads or receive Codex approvals. See the [Responses API](https://platform.openai.com/docs/api-reference/responses) and [streaming events](https://platform.openai.com/docs/api-reference/responses-streaming) documentation for the upstream protocol.
 
 ## Server requirements
 
@@ -108,7 +108,7 @@ The Git tab runs status, pull, commit, and push commands in the configured remot
 
 ### Chat
 
-Chat is a separate local conversation. Each send includes the saved Chat transcript in a stateless Responses API request; the API key is stored in Keychain and is never sent through the Codex SSH channel. Clear Chat removes the locally cached transcript.
+Chat is a separate local conversation. Each send includes the saved Chat transcript in a stateless Responses API request; the API key is stored in Keychain and is never sent through the Codex SSH channel. The microphone records until tapped again, then transcribes the bounded WAV with GPT before sending it. Clear Chat removes the locally cached transcript.
 
 ## Repository layout
 

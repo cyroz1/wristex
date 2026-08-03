@@ -79,7 +79,14 @@ public final class ChatService: ObservableObject {
     private let modelKey = "wristex.chat.model"
     private let apiKeyAccount = "openai-api-key"
     private let endpoint = URL(string: "https://api.openai.com/v1/responses")!
+    private let transcriptionEndpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
     private let modelsEndpoint = URL(string: "https://api.openai.com/v1/models")!
+    private let transcriptionModel = "gpt-transcribe"
+    private let maxVoiceBytes = 20 * 1024 * 1024
+    private var voiceCapture: WatchVoiceCapture?
+    private var voiceData = Data()
+    private var voiceSampleRate = 16_000
+    private var voiceChannels = 1
 
     private init() {
         apiKey = KeychainStore.read(apiKeyAccount)
@@ -101,6 +108,57 @@ public final class ChatService: ObservableObject {
 
     public func clearAPIKey() {
         configure(apiKey: "", model: model)
+    }
+
+    public func startVoiceCapture() async throws {
+        guard isConfigured else { throw ChatAPIError.notConfigured }
+        guard voiceCapture == nil else { return }
+        guard await WatchVoiceCapture.requestPermission() else {
+            throw ChatAPIError.apiMessage("Microphone access was denied.")
+        }
+
+        voiceData.removeAll(keepingCapacity: true)
+        voiceSampleRate = 16_000
+        voiceChannels = 1
+
+        let capture = WatchVoiceCapture()
+        capture.onAudio = { [weak self] data, sampleRate, channels, _ in
+            guard let self, self.voiceData.count < self.maxVoiceBytes else { return }
+            self.voiceData.append(data.prefix(self.maxVoiceBytes - self.voiceData.count))
+            self.voiceSampleRate = sampleRate
+            self.voiceChannels = channels
+        }
+
+        do {
+            try capture.start()
+            voiceCapture = capture
+        } catch {
+            capture.stop()
+            throw error
+        }
+    }
+
+    public func stopVoiceCapture() async throws -> String {
+        guard let capture = voiceCapture else {
+            throw ChatAPIError.invalidResponse
+        }
+
+        capture.stop()
+        voiceCapture = nil
+        let pcm = voiceData
+        let sampleRate = voiceSampleRate
+        let channels = voiceChannels
+        voiceData.removeAll(keepingCapacity: false)
+
+        guard !pcm.isEmpty else { throw ChatAPIError.invalidResponse }
+        let wav = makeWAV(from: pcm, sampleRate: sampleRate, channels: channels)
+        return try await transcribe(wav)
+    }
+
+    public func cancelVoiceCapture() {
+        voiceCapture?.stop()
+        voiceCapture = nil
+        voiceData.removeAll(keepingCapacity: false)
     }
 
     public func testConnection() async throws {
@@ -180,6 +238,78 @@ public final class ChatService: ObservableObject {
 
         guard !reply.isEmpty else { throw ChatAPIError.invalidResponse }
         return reply
+    }
+
+    private func transcribe(_ wav: Data) async throws -> String {
+        guard isConfigured else { throw ChatAPIError.notConfigured }
+
+        let boundary = "WristexBoundary-" + UUID().uuidString
+        var request = URLRequest(url: transcriptionEndpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=" + boundary, forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        appendField(name: "model", value: transcriptionModel, boundary: boundary, to: &body)
+        body.append(Data(("--" + boundary + "\r\n").utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"wristex.wav\"\r\n".utf8))
+        body.append(Data("Content-Type: audio/wav\r\n\r\n".utf8))
+        body.append(wav)
+        body.append(Data(("\r\n--" + boundary + "--\r\n").utf8))
+        request.httpBody = body
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ChatAPIError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = object["error"] as? [String: Any],
+               let message = error["message"] as? String {
+                throw ChatAPIError.apiMessage(message)
+            }
+            throw ChatAPIError.httpStatus(httpResponse.statusCode)
+        }
+
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = object["text"] as? String,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ChatAPIError.invalidResponse
+        }
+        return text
+    }
+
+    private func appendField(name: String, value: String, boundary: String, to body: inout Data) {
+        body.append(Data(("--" + boundary + "\r\n").utf8))
+        body.append(Data(("Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n").utf8))
+        body.append(Data((value + "\r\n").utf8))
+    }
+
+    private func makeWAV(from pcm: Data, sampleRate: Int, channels: Int) -> Data {
+        let safeSampleRate = max(sampleRate, 8_000)
+        let safeChannels = max(channels, 1)
+        let byteRate = safeSampleRate * safeChannels * 2
+        let blockAlign = safeChannels * 2
+        var wav = Data()
+        wav.append(Data("RIFF".utf8))
+        appendLittleEndian(UInt32(pcm.count + 36), to: &wav)
+        wav.append(Data("WAVEfmt ".utf8))
+        appendLittleEndian(UInt32(16), to: &wav)
+        appendLittleEndian(UInt16(1), to: &wav)
+        appendLittleEndian(UInt16(safeChannels), to: &wav)
+        appendLittleEndian(UInt32(safeSampleRate), to: &wav)
+        appendLittleEndian(UInt32(byteRate), to: &wav)
+        appendLittleEndian(UInt16(blockAlign), to: &wav)
+        appendLittleEndian(UInt16(16), to: &wav)
+        wav.append(Data("data".utf8))
+        appendLittleEndian(UInt32(pcm.count), to: &wav)
+        wav.append(pcm)
+        return wav
+    }
+
+    private func appendLittleEndian<T: FixedWidthInteger>(_ value: T, to data: inout Data) {
+        var littleEndian = value.littleEndian
+        withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
     }
 
     private func addHeaders(to request: inout URLRequest) {

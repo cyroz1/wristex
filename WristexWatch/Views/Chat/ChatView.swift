@@ -45,12 +45,34 @@ public struct ChatView: View {
                     .submitLabel(.send)
                     .onSubmit { sendInput() }
 
-                Button(action: presentDictation) {
-                    Image(systemName: "mic.fill")
+                if viewModel.isVoiceRecording {
+                    Button {
+                        Task {
+                            if let transcript = await viewModel.stopVoiceTranscription() {
+                                await viewModel.sendMessage(transcript)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "waveform")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                } else {
+                    Button {
+                        Task {
+                            // Prefer GPT transcription when the API key is
+                            // configured; native dictation remains a fallback.
+                            if !(await viewModel.startVoiceTranscription()) {
+                                presentDictation()
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "mic.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.indigo)
+                    .disabled(viewModel.isSending)
                 }
-                .buttonStyle(.bordered)
-                .tint(.indigo)
-                .disabled(viewModel.isSending)
 
                 Button(action: sendInput) {
                     Image(systemName: "arrow.up")
@@ -101,6 +123,9 @@ public struct ChatView: View {
         }
         .onAppear {
             viewModel.refreshConfiguration()
+        }
+        .onDisappear {
+            viewModel.cancelVoiceTranscription()
         }
     }
 
