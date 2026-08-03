@@ -77,6 +77,20 @@ public struct ThreadListView: View {
                                     .background(Color.white.opacity(0.15))
                                     .cornerRadius(4)
                             }
+
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(statusColor(thread))
+                                    .frame(width: 6, height: 6)
+                                Text(thread.status.shortLabel)
+                                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                                    .foregroundColor(statusColor(thread))
+                                if thread.isPinned {
+                                    Image(systemName: "pin.fill")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(.orange)
+                                }
+                            }
                             
                             Text(thread.lastMessage)
                                 .font(.caption2)
@@ -145,6 +159,16 @@ public struct ThreadListView: View {
         case "claude-3-5": return "Claude"
         case "gemini-1-5": return "Gemini"
         default: return modelId.prefix(4).uppercased()
+        }
+    }
+
+    private func statusColor(_ thread: AgentThread) -> Color {
+        switch thread.status.kind {
+        case .notLoaded: return .gray
+        case .idle: return .green
+        case .active:
+            return thread.status.activeFlags.isEmpty ? .blue : .orange
+        case .systemError: return .red
         }
     }
 }

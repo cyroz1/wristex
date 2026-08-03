@@ -4,6 +4,7 @@ import WatchKit
 public struct ThreadDetailView: View {
     @StateObject private var viewModel: ThreadDetailViewModel
     @State private var showingModelPicker = false
+    @State private var showingControls = false
     @State private var inputText = ""
     
     public init(thread: AgentThread) {
@@ -29,6 +30,13 @@ public struct ThreadDetailView: View {
                             .tint(.indigo.opacity(0.15))
                             
                             Spacer()
+
+                            Button(action: { showingControls = true }) {
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.orange.opacity(0.15))
                             
                             if viewModel.isLoading {
                                 ProgressView()
@@ -43,6 +51,25 @@ public struct ThreadDetailView: View {
                             }
                         }
                         .padding(.horizontal, 4)
+                        .padding(.bottom, 6)
+
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(statusColor)
+                                .frame(width: 7, height: 7)
+                            Image(systemName: statusIcon)
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(viewModel.thread.status.label)
+                                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            if let goal = viewModel.goal {
+                                Text("· (goal.status.label)")
+                                    .font(.system(size: 9, design: .rounded))
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .foregroundColor(statusColor)
+                        .padding(.horizontal, 6)
                         .padding(.bottom, 6)
                         
                         // Messages Bubble List
@@ -216,6 +243,9 @@ public struct ThreadDetailView: View {
                 .padding()
             }
         }
+        .sheet(isPresented: $showingControls) {
+            ThreadControlsView(viewModel: viewModel)
+        }
     }
     
     private var activeModelName: String {
@@ -223,6 +253,32 @@ public struct ThreadDetailView: View {
             return current.name
         }
         return viewModel.activeModelId.uppercased()
+    }
+
+    private var statusColor: Color {
+        switch viewModel.thread.status.kind {
+        case .notLoaded: return .gray
+        case .idle: return .green
+        case .active:
+            return viewModel.thread.status.activeFlags.isEmpty ? .blue : .orange
+        case .systemError: return .red
+        }
+    }
+
+    private var statusIcon: String {
+        switch viewModel.thread.status.kind {
+        case .notLoaded: return "moon.zzz.fill"
+        case .idle: return "checkmark.circle.fill"
+        case .active:
+            if viewModel.thread.status.activeFlags.contains(.waitingOnApproval) {
+                return "exclamationmark.shield.fill"
+            }
+            if viewModel.thread.status.activeFlags.contains(.waitingOnUserInput) {
+                return "questionmark.circle.fill"
+            }
+            return "bolt.horizontal.circle.fill"
+        case .systemError: return "xmark.octagon.fill"
+        }
     }
     
     private func presentDictation() {
@@ -251,6 +307,122 @@ public struct ThreadDetailView: View {
         // Fallback for previews/simulator if needed
         print("Dictation triggered in preview mode.")
         #endif
+    }
+}
+
+private struct ThreadControlsView: View {
+    @ObservedObject var viewModel: ThreadDetailViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var goalText = ""
+
+    var body: some View {
+        List {
+            Section("Goal") {
+                TextField("What should Codex achieve?", text: $goalText)
+                    .lineLimit(3)
+
+                if let goal = viewModel.goal {
+                    Text("\(goal.status.label) · \(goal.tokensUsed) tokens")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Button("Update Goal") {
+                        Task { await viewModel.setGoal(goalText) }
+                    }
+                    Button("Clear Goal", role: .destructive) {
+                        Task {
+                            await viewModel.clearGoal()
+                            goalText = ""
+                        }
+                    }
+                } else {
+                    Button("Set Goal") {
+                        Task { await viewModel.setGoal(goalText) }
+                    }
+                }
+            }
+
+            Section("Reasoning effort") {
+                ForEach(viewModel.reasoningEffortOptions, id: \.self) { effort in
+                    Button {
+                        var next = viewModel.settings
+                        next.reasoningEffort = effort == "default" ? nil : effort
+                        Task { await viewModel.updateSettings(next) }
+                    } label: {
+                        settingRow(
+                            title: effort == "default" ? "Model default" : effort.capitalized,
+                            selected: (viewModel.settings.reasoningEffort ?? "default") == effort
+                        )
+                    }
+                }
+            }
+
+            Section("Personality") {
+                ForEach(CodexPersonality.allCases) { personality in
+                    Button {
+                        var next = viewModel.settings
+                        next.personality = personality
+                        Task { await viewModel.updateSettings(next) }
+                    } label: {
+                        settingRow(title: personality.label, selected: viewModel.settings.personality == personality)
+                    }
+                }
+            }
+
+            Section("Approvals") {
+                ForEach(CodexApprovalPolicy.allCases) { policy in
+                    Button {
+                        var next = viewModel.settings
+                        next.approvalPolicy = policy
+                        Task { await viewModel.updateSettings(next) }
+                    } label: {
+                        settingRow(title: policy.label, selected: viewModel.settings.approvalPolicy == policy)
+                    }
+                }
+            }
+
+            Section("Sandbox") {
+                ForEach(CodexSandboxPolicy.allCases) { policy in
+                    Button {
+                        var next = viewModel.settings
+                        next.sandboxPolicy = policy
+                        Task { await viewModel.updateSettings(next) }
+                    } label: {
+                        settingRow(title: policy.label, selected: viewModel.settings.sandboxPolicy == policy)
+                    }
+                }
+            }
+
+            Section("Reasoning summary") {
+                ForEach(CodexReasoningSummary.allCases) { summary in
+                    Button {
+                        var next = viewModel.settings
+                        next.reasoningSummary = summary
+                        Task { await viewModel.updateSettings(next) }
+                    } label: {
+                        settingRow(title: summary.label, selected: viewModel.settings.reasoningSummary == summary)
+                    }
+                }
+            }
+
+            Button("Done") { dismiss() }
+        }
+        .navigationTitle("Thread Controls")
+        .onAppear {
+            goalText = viewModel.goal?.objective ?? ""
+        }
+    }
+
+    @ViewBuilder
+    private func settingRow(title: String, selected: Bool) -> some View {
+        HStack {
+            Text(title)
+                .font(.caption)
+            Spacer()
+            if selected {
+                Image(systemName: "checkmark")
+                    .foregroundColor(.indigo)
+            }
+        }
     }
 }
 

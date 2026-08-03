@@ -7,6 +7,8 @@ public final class ThreadDetailViewModel: ObservableObject {
     @Published public var messages: [ThreadMessage] = []
     @Published public var models: [ModelOption] = []
     @Published public var activeModelId: String
+    @Published public var settings = ThreadSettings()
+    @Published public var goal: AgentThreadGoal?
     @Published public var isLoading = false
     @Published public var isSending = false
     @Published public var isVoiceRecording = false
@@ -41,6 +43,18 @@ public final class ThreadDetailViewModel: ObservableObject {
         }
     }
 
+    public var reasoningEffortOptions: [String] {
+        let advertised = models.first(where: { $0.id == activeModelId })?.reasoningEfforts ?? []
+        if advertised.isEmpty {
+            return ["default", "low", "medium", "high", "ultra"]
+        }
+        return ["default"] + advertised.filter { $0 != "default" }
+    }
+
+    public var activeModelSupportsPersonality: Bool {
+        models.first(where: { $0.id == activeModelId })?.supportsPersonality ?? false
+    }
+
     public func sendMessage(_ text: String) async {
         let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanText.isEmpty, !isSending else { return }
@@ -52,6 +66,7 @@ public final class ThreadDetailViewModel: ObservableObject {
         HapticManager.shared.playClick()
 
         do {
+            updateStatus(AgentThreadStatus(kind: .active))
             let result = try await codex.send(cleanText, thread: thread)
             if let streamingMessageID,
                let index = messages.firstIndex(where: { $0.id == streamingMessageID }) {
@@ -67,10 +82,12 @@ public final class ThreadDetailViewModel: ObservableObject {
             self.streamingMessageID = nil
             thread.codexSessionID = result.sessionID
             thread.lastMessage = result.reply
+            updateStatus(AgentThreadStatus(kind: .idle))
             store.save(messages, for: thread.id)
             store.save(thread)
             HapticManager.shared.playSuccess()
         } catch {
+            updateStatus(AgentThreadStatus(kind: .systemError))
             errorMessage = error.localizedDescription
             HapticManager.shared.playFailure()
         }
@@ -90,11 +107,46 @@ public final class ThreadDetailViewModel: ObservableObject {
         }
     }
 
+    public func updateSettings(_ newSettings: ThreadSettings) async {
+        do {
+            try await codex.updateThreadSettings(thread.id, settings: newSettings)
+            settings = newSettings
+            HapticManager.shared.playSuccess()
+        } catch {
+            errorMessage = error.localizedDescription
+            HapticManager.shared.playFailure()
+        }
+    }
+
+    public func setGoal(_ objective: String) async {
+        let cleanObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanObjective.isEmpty else { return }
+        do {
+            goal = try await codex.setGoal(threadID: thread.id, objective: cleanObjective)
+            HapticManager.shared.playSuccess()
+        } catch {
+            errorMessage = error.localizedDescription
+            HapticManager.shared.playFailure()
+        }
+    }
+
+    public func clearGoal() async {
+        do {
+            try await codex.clearGoal(threadID: thread.id)
+            goal = nil
+            HapticManager.shared.playSuccess()
+        } catch {
+            errorMessage = error.localizedDescription
+            HapticManager.shared.playFailure()
+        }
+    }
+
     public func interruptTurn() async {
         do {
             try await codex.interrupt(threadID: thread.id)
             isSending = false
             streamingMessageID = nil
+            updateStatus(AgentThreadStatus(kind: .idle))
             HapticManager.shared.playClick()
         } catch {
             errorMessage = error.localizedDescription
@@ -131,6 +183,7 @@ public final class ThreadDetailViewModel: ObservableObject {
         Task {
             await loadMessages()
             await loadModels()
+            goal = try? await codex.loadGoal(threadID: thread.id)
         }
     }
 
@@ -146,6 +199,22 @@ public final class ThreadDetailViewModel: ObservableObject {
 
     private func handleRemoteNotification(method: String, params: [String: Any]) {
         guard params["threadId"] as? String == thread.id else { return }
+        if method == "thread/status/changed" {
+            updateStatus(status(from: params["status"]))
+            return
+        }
+        if method == "thread/goal/updated" {
+            Task { goal = try? await codex.loadGoal(threadID: thread.id) }
+            return
+        }
+        if method == "turn/started" {
+            updateStatus(AgentThreadStatus(kind: .active))
+            return
+        }
+        if method == "turn/completed" {
+            updateStatus(AgentThreadStatus(kind: .idle))
+            return
+        }
         if method == "thread/realtime/transcript/done",
            params["role"] as? String == "user",
            let text = params["text"] as? String {
@@ -177,5 +246,21 @@ public final class ThreadDetailViewModel: ObservableObject {
             messages.append(ThreadMessage(id: id, sender: "agent", content: delta, timestamp: Date()))
         }
         store.save(messages, for: thread.id)
+    }
+
+    private func updateStatus(_ status: AgentThreadStatus) {
+        thread.status = status
+        store.save(thread)
+    }
+
+    private func status(from value: Any?) -> AgentThreadStatus {
+        guard let raw = value as? [String: Any],
+              let type = raw["type"] as? String,
+              let kind = AgentThreadStatusKind(rawValue: type) else {
+            return AgentThreadStatus()
+        }
+        let flags = (raw["activeFlags"] as? [String] ?? [])
+            .compactMap(AgentThreadActiveFlag.init(rawValue:))
+        return AgentThreadStatus(kind: kind, activeFlags: flags)
     }
 }

@@ -572,7 +572,15 @@ final class RemoteCodexService {
         return data.compactMap { model in
             guard let id = model["id"] as? String else { return nil }
             let name = model["displayName"] as? String ?? id
-            return ModelOption(id: id, name: name)
+            let reasoningEfforts = (model["supportedReasoningEfforts"] as? [[String: Any]] ?? [])
+                .compactMap { $0["reasoningEffort"] as? String }
+            let supportsPersonality = model["supportsPersonality"] as? Bool ?? false
+            return ModelOption(
+                id: id,
+                name: name,
+                reasoningEfforts: reasoningEfforts,
+                supportsPersonality: supportsPersonality
+            )
         }
     }
 
@@ -584,6 +592,45 @@ final class RemoteCodexService {
             params["model"] = modelID
         }
         _ = try await client.request("thread/settings/update", params: params)
+    }
+
+    func updateThreadSettings(_ threadID: String, settings: ThreadSettings) async throws {
+        let params: [String: Any] = [
+            "threadId": threadID,
+            "effort": settings.reasoningEffort ?? NSNull(),
+            "personality": settings.personality.serverValue ?? NSNull(),
+            "approvalPolicy": settings.approvalPolicy.rawValue,
+            "sandboxPolicy": settings.sandboxPolicy.serverValue ?? NSNull(),
+            "summary": settings.reasoningSummary.serverValue ?? NSNull()
+        ]
+        _ = try await client.request("thread/settings/update", params: params)
+    }
+
+    func loadGoal(threadID: String) async throws -> AgentThreadGoal? {
+        let response = try await client.request("thread/goal/get", params: ["threadId": threadID])
+        guard let goal = response["goal"] as? [String: Any] else { return nil }
+        return makeGoal(goal)
+    }
+
+    func setGoal(
+        threadID: String,
+        objective: String,
+        status: AgentThreadGoalStatus = .active,
+        tokenBudget: Int64? = nil
+    ) async throws -> AgentThreadGoal? {
+        var params: [String: Any] = [
+            "threadId": threadID,
+            "objective": objective,
+            "status": status.rawValue
+        ]
+        params["tokenBudget"] = tokenBudget.map { NSNumber(value: $0) } ?? NSNull()
+        let response = try await client.request("thread/goal/set", params: params)
+        guard let goal = response["goal"] as? [String: Any] else { return nil }
+        return makeGoal(goal)
+    }
+
+    func clearGoal(threadID: String) async throws {
+        _ = try await client.request("thread/goal/clear", params: ["threadId": threadID])
     }
 
     func archiveThread(_ threadID: String) async throws {
@@ -717,7 +764,39 @@ final class RemoteCodexService {
             lastMessage: preview.isEmpty ? "Ready" : preview,
             activeModel: "default",
             codexSessionID: value["sessionId"] as? String,
-            connectionID: ssh.connectionID
+            connectionID: ssh.connectionID,
+            status: makeStatus(value["status"]),
+            isPinned: value["isPinned"] as? Bool ?? false,
+            cwd: value["cwd"] as? String
+        )
+    }
+
+    private func makeStatus(_ value: Any?) -> AgentThreadStatus {
+        guard let raw = value as? [String: Any],
+              let type = raw["type"] as? String,
+              let kind = AgentThreadStatusKind(rawValue: type) else {
+            return AgentThreadStatus()
+        }
+        let flags = (raw["activeFlags"] as? [String] ?? [])
+            .compactMap(AgentThreadActiveFlag.init(rawValue:))
+        return AgentThreadStatus(kind: kind, activeFlags: flags)
+    }
+
+    private func makeGoal(_ value: [String: Any]) -> AgentThreadGoal? {
+        guard let threadID = value["threadId"] as? String,
+              let objective = value["objective"] as? String,
+              let statusValue = value["status"] as? String,
+              let status = AgentThreadGoalStatus(rawValue: statusValue) else {
+            return nil
+        }
+        return AgentThreadGoal(
+            threadID: threadID,
+            objective: objective,
+            status: status,
+            tokenBudget: (value["tokenBudget"] as? NSNumber)?.int64Value,
+            tokensUsed: (value["tokensUsed"] as? NSNumber)?.int64Value ?? 0,
+            timeUsedSeconds: (value["timeUsedSeconds"] as? NSNumber)?.int64Value ?? 0,
+            updatedAt: (value["updatedAt"] as? NSNumber)?.int64Value ?? 0
         )
     }
 
