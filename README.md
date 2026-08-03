@@ -1,55 +1,122 @@
 # Wristex
 
-Wristex is a standalone watchOS remote control for Codex running on a remote
-Linux development host. The watch opens SSH directly to the host and launches
-`codex app-server --stdio` inside that SSH session; there is no Wristex relay
-or HTTP service in the middle.
+Wristex is a watchOS remote control for Codex running on an Oracle Cloud Linux server. It connects directly to the server over SSH and speaks JSON-RPC to `codex app-server --stdio`; there is no REST backend or relay service.
 
-## Requirements
+## Features
 
-- Xcode 26 or newer
-- watchOS 10 or newer
-- A reachable SSH host with password authentication enabled, or a private key pasted into Wristex Settings
-- Codex CLI installed and authenticated on that host
-- A Git repository on the host for the configured workspace
+- List, create, name, archive, delete, and resume remote Codex threads.
+- Read thread history and send prompts with streamed agent replies.
+- Show live thread status: ready, working, needs approval, needs input, or error.
+- Interrupt a running turn.
+- Select the host’s available models and supported reasoning-effort options.
+- Configure per-thread goals and view goal progress/status.
+- Configure personality, approval policy, sandbox policy, and reasoning summaries.
+- Review and answer app-server approval requests for commands, file changes, user input, and MCP elicitation.
+- Dictate with Codex realtime transcription over SSH, with native watchOS dictation fallback.
+- Inspect remote Git status and run pull, commit, and push actions.
+- Cache the last known threads and messages locally for short offline periods.
 
-On the Linux host, authenticate Codex once for the SSH user and verify that
-the same user can run `codex app-server --stdio`. Wristex starts that process
-itself after SSH authentication; you do not need to expose an HTTP port or
-enable Codex remote-control pairing.
+## Architecture
 
-## Build
+```text
+Apple Watch
+    │
+    │ Direct authenticated SSH
+    ▼
+Oracle Linux server
+    │
+    └── codex app-server --stdio
+             │
+             ├── JSON-RPC thread and turn APIs
+             ├── streamed events and thread status
+             ├── approval requests
+             ├── model and settings APIs
+             └── realtime voice transcription
+```
+
+`SSHManager` handles authentication, host-key fingerprint pinning, one-shot commands, and the long-lived bidirectional shell used by the app server. `RemoteCodexService` is the app-server JSON-RPC client. Codex remains the source of truth; `ThreadStore` only caches the last successful data in the watch app’s local preferences.
+
+## Server requirements
+
+The configured Oracle Linux account must have:
+
+1. The Codex CLI installed and available on `PATH`.
+2. Codex authentication configured for that account.
+3. `codex app-server --stdio` available in the installed CLI version.
+4. SSH access reachable from the Apple Watch’s network.
+5. The target repository path configured in Wristex’s SSH settings.
+
+Verify the CLI before configuring the watch:
+
+```bash
+ssh user@your-server 'command -v codex && codex --version && codex app-server --help'
+```
+
+The app server protocol is experimental in Codex CLI, so keep the server CLI and Wristex deployment aligned when upgrading.
+
+## Xcode setup
+
+The repository includes `Wristex.xcodeproj` and a watchOS scheme.
 
 1. Open `Wristex.xcodeproj` in Xcode.
-2. Select your Apple development team for the **Wristex** target.
-3. Select an Apple Watch or watchOS simulator and run.
+2. Select the `Wristex` watchOS target and a watchOS Simulator or paired Apple Watch.
+3. Build and run.
+4. Open **SSH Settings** in Wristex and enter the server, username, port, and workspace path.
+5. Authenticate with either an SSH password or a PEM private key and passphrase.
+6. Tap **Save & Test**, then accept the server’s first host-key fingerprint if it is correct.
 
-The SwiftSH source is pinned under `Vendor/SwiftSH`; Xcode resolves its pinned libssh2 watchOS binary through Swift Package Manager.
+SwiftSH and its libssh2 bridge are vendored under `Vendor/SwiftSH` so the direct SSH transport is available to the Xcode target.
 
-## Connect
+## SSH security
 
-Open **Settings** on the watch and enter the SSH hostname, username, port,
-remote workspace, and either a password or a dedicated PEM private key. Tap
-**Save & Test**. The first successful connection pins the host's SHA-1
-fingerprint; later key changes are rejected.
+- Passwords, private keys, and key passphrases are stored in the Apple Keychain.
+- Host fingerprints are pinned per `username@host:port` on first successful connection.
+- A changed fingerprint blocks the connection until the stored fingerprint is explicitly forgotten.
+- The app server uses a persistent SSH channel so streamed turns and approval requests are not reduced to one-shot shell output.
+- Do not use full-access sandbox or `never` approval policy unless the remote workspace and server account are trusted.
 
-The Codex app server is the source of truth for threads, history, models,
-turns, streamed events, and approval prompts. The watch only caches the last
-known thread/message state for offline display. Git actions still run directly
-inside the configured remote workspace.
+## Watch workflows
 
-The app-server protocol is experimental and versioned with the installed Codex
-CLI. Keep the host's CLI reasonably current and test `codex app-server --help`
-after upgrades.
+### Threads
 
-The voice button first uses Codex's experimental realtime audio/transcription
-methods over SSH and sends the resulting transcript as a turn. If the remote
-Codex build does not expose realtime voice, Wristex falls back to the native
-watchOS dictation controller.
+The Threads tab loads remote threads from `thread/list`. Thread detail loads history from `thread/items/list`, starts turns with `turn/start`, and listens for streamed `item/agentMessage/delta` events. Status changes arrive through `thread/status/changed`.
 
-Keep the watch app in the foreground while a turn is running. watchOS may
-suspend a direct SSH socket in the background, so reliable background alerts
-would require an explicitly approved notification/push design.
+The **Thread Controls** screen exposes:
 
-Passwords, private keys, and key passphrases are stored in Keychain. Only
-connect to hosts you control.
+- Goal objective and goal state.
+- Model-specific reasoning effort.
+- Automatic, friendly, or pragmatic personality.
+- Ask-when-needed, untrusted-only, or never approval policy.
+- Host default, read-only, workspace-write, or full-access sandbox.
+- Automatic, concise, detailed, or hidden reasoning summaries.
+
+### Approvals
+
+The Approvals tab subscribes to live app-server requests and shows compact, watch-friendly details. Command and file-change approvals use the server’s native response methods. Permission-scope approvals are denied from the tiny UI until a dedicated scope picker is available.
+
+### Voice
+
+The microphone button first attempts Codex realtime transcription through the remote app server. If that capability is unavailable, Wristex falls back to the native watchOS dictation controller.
+
+### Git
+
+The Git tab runs status, pull, commit, and push commands in the configured remote workspace. Commit stages all files in that workspace, so review the status list before using it.
+
+## Repository layout
+
+```text
+WristexWatch/
+├── Models/       Threads, statuses, goals, settings, messages, approvals, Git, models
+├── Services/     SSH, Keychain, app-server JSON-RPC, local cache, haptics
+├── ViewModels/   Remote thread, approval, Git, and settings state
+└── Views/        Watch UI for threads, controls, approvals, Git, and settings
+Vendor/SwiftSH/   Vendored SSH/libssh2 transport
+Wristex.xcodeproj Xcode project and watchOS scheme
+```
+
+## Current limitations
+
+- The app currently depends on an active SSH connection for live streaming and approvals; server-to-watch push notifications and durable background task supervision are not implemented.
+- Pure SSH cannot reliably wake a suspended watchOS app. Background completion alerts require a future push path such as APNs from a trusted server component.
+- The watch UI is intentionally a compact control surface, not a pixel-for-pixel desktop replacement; large diffs, rich artifacts, browser views, and full terminal output still need dedicated screens.
+- There is no automated test suite in the repository. Swift syntax and isolated service typechecks can run without Xcode, but a complete watchOS build requires Xcode and the watchOS SDK.

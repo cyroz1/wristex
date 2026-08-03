@@ -1,76 +1,71 @@
-# Wristex Agent Guidelines & Specifications
+# Wristex Agent Guidelines
 
-This document defines how autonomous AI coding agents (such as OpenAI Codex, local workspaces, or future Antigravity runs) should interact with the **Wristex** watchOS client. 
+Wristex is a watchOS client for controlling a remote Codex app server. Keep all user-facing summaries short and watch-readable.
 
-Because Apple Watch screens are tiny and battery-constrained, agents must format outputs, messages, and approvals specifically to fit the wrist UI.
+## Communication
 
----
+- Use one or two concise sentences for completed work.
+- Prefer simple bullets and short labels.
+- Avoid large code blocks, deeply nested Markdown, and desktop-sized explanations in watch-facing text.
+- For approvals, show the primary intent first and truncate long command details.
 
-## 1. Thread Communication Guidelines
+## Integration boundary
 
-### Message Formatting
-*   **Be extremely concise**: Avoid long intros, conversational filler, and extensive code explanations in threads.
-*   **Summarize changes**: Instead of printing entire blocks of code, describe the action in 1-2 sentences.
-    *   *Bad*: *"I have inspected the compiler logs and found that line 45 has a missing semicolon. Here is the full code: ... [100 lines of code] ... I've fixed it by adding the semicolon."*
-    *   *Good*: *"Fixed syntax error in `NetworkManager.swift:45` (added missing semicolon). Build now succeeds!"*
-*   **Markdown Support**: The watch app renders standard text labels. Limit markdown formatting to simple bullet points. Avoid complex nested markdown tables or blockquotes in chat bubbles.
+The production transport is direct SSH through `WristexWatch/Services/SSHManager.swift`:
 
----
+1. `SSHManager` authenticates with a Keychain-backed password or PEM private key.
+2. It pins the remote host fingerprint per `username@host:port`.
+3. `RemoteCodexService` opens a long-lived SSH shell and launches `codex app-server --stdio`.
+4. JSON-RPC requests, streamed notifications, and server approval requests share that channel.
 
-## 2. Tool Approvals Specification
+Do not reintroduce REST endpoints, fake remote JSON files, or simulated agent replies. `ThreadStore` is only a local cache and must never replace the Codex app server as the source of truth.
 
-The Wristex app displays pending tool execution prompts in a high-priority approval queue. To make this readable on a ~41mm or ~45mm screen, the agent backend must structure `ApprovalRequest` details dynamically.
+## Thread behavior
 
-### Payload Schema for `GET /api/approvals`
-```json
-[
-  {
-    "id": "appr-1234",
-    "toolName": "run_command",
-    "details": "git commit -m 'feat: update styling'",
-    "status": "pending",
-    "timestamp": "2026-07-17T20:28:00.000Z"
-  }
-]
-```
+Thread operations should use the app-server protocol:
 
-### Guidelines for different tools:
+- `thread/list`, `thread/start`, `thread/name/set`, `thread/archive`, and `thread/delete` for lifecycle actions.
+- `thread/items/list` for history.
+- `thread/settings/update` for model, reasoning effort, personality, approval, sandbox, and summary settings.
+- `thread/goal/get`, `thread/goal/set`, and `thread/goal/clear` for goal mode.
+- `thread/status/changed` for live status updates.
+- `turn/start`, `turn/completed`, and `turn/interrupt` for turn control.
 
-#### A. Command Line / Shell execution (`run_command`)
-*   **Format**: Prepend command details with a `$` prompt indicator.
-*   **Trimming**: If the command is extremely long, truncate parameters or arguments so the command's primary intent is visible.
-    *   *Original*: `npx -y create-vite-app@latest ./ --template react-ts --skip-git --verbose`
-    *   *Details for Watch*: `$ npx create-vite-app ... (react-ts)`
+Preserve these watch-friendly statuses:
 
-#### B. File Edits / File Writes (`write_file` / `replace_file_content`)
-*   **Format**: Specify the target file and a short change delta summary rather than full diff contents.
-*   **Details format**: `[Write] path/to/file.swift (+12 lines, -4 lines) - Added haptic cues`
+- `READY`
+- `RUNNING`
+- `APPROVE`
+- `INPUT`
+- `ERROR`
 
----
+When adding a new status or event, update both the model mapping and the compact watch presentation.
 
-## 3. Git Operations API
+## Approval behavior
 
-The watch app can trigger automated git operations. The agent should configure its hooks to handle these actions gracefully:
+Approval details must fit a 41 mm or 45 mm watch:
 
-1.  **Pull (`POST /api/git/action` with `{"action": "pull"}`)**:
-    *   The agent must fetch from the remote repository, merge/rebase, and check for conflicts.
-    *   Return a message summarizing the fetch status (e.g. `"Pulled 3 commits. Branch up to date."`).
-2.  **Commit (`POST /api/git/action` with `{"action": "commit", "commitMessage": "..."}`)**:
-    *   Stage all current changes (`git add .` or equivalent).
-    *   Commit with the user's dictated commit message.
-3.  **Push (`POST /api/git/action` with `{"action": "push"}`)**:
-    *   Push the active branch to the remote origin.
-    *   If upstream is missing, configure it automatically.
+- Commands begin with `$`.
+- Long commands should show the executable and primary intent.
+- File changes should show the target path and a short delta summary.
+- Never silently approve a permission-scope expansion from a tiny UI.
+- Use the app-server request’s original response method and RPC ID; do not write ad hoc approval files.
 
----
+## Advanced controls
 
-## 4. LLM Intelligence & Model Selection
+Settings must be sent to Codex through `thread/settings/update`. Do not hard-code a model’s reasoning options when the model catalog advertises supported efforts. Keep dangerous choices such as full sandbox access and `never` approval visibly labeled.
 
-The agent system should expose its available model routes via `GET /api/models`. When a user toggles the model on their Apple Watch:
-*   The watch makes a request to `POST /api/threads/{id}/model` specifying the desired model ID.
-*   The agent must swap its underlying inference system for that thread's future interactions.
+Goals should use the native goal methods and display status or usage when available. Keep the goal editor short enough for watch dictation.
 
-### Recommended Model Profiles:
-*   `gemini-1-5` (or `pro`): For complex architectural questions, deep reasoning, and multi-file code editing.
-*   `gpt-4o` (or similar standard models): For standard code modifications, commits, and rapid queries.
-*   `claude-3-5` (or `flash`): For rapid iterations, refactoring, and quick explanations.
+## Git actions
+
+Git actions operate in the configured remote workspace through SSH. The commit action intentionally stages the whole workspace with `git add .`; keep the status review visible before committing. Summarize pull, commit, and push results in one short sentence.
+
+## Security and validation
+
+- Keep credentials in Keychain, not `UserDefaults`.
+- Preserve host-key verification and never add a bypass for convenience.
+- Escape or structure remote command arguments safely.
+- Treat remote tool requests and paths as untrusted input.
+- Run `swiftc -frontend -parse $(rg --files WristexWatch -g '*.swift')` when Xcode is unavailable.
+- Run a complete Xcode/watchOS build when Xcode and the watchOS SDK are available.
