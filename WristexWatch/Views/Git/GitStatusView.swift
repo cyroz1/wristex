@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchKit
 
 public struct GitStatusView: View {
     @EnvironmentObject private var viewModel: GitViewModel
@@ -196,7 +197,7 @@ public struct GitStatusView: View {
     private func presentDictation() {
         HapticManager.shared.playStart()
         #if os(watchOS)
-        let rootController = WKExtension.shared().visibleInterfaceController
+        let rootController = WKApplication.shared().visibleInterfaceController
         rootController?.presentTextInputController(withSuggestions: nil, allowedInputMode: .plain) { results in
             guard let results = results, let firstResult = results.first as? String else {
                 HapticManager.shared.playStop()

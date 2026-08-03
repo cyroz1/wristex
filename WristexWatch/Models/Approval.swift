@@ -6,21 +6,36 @@ public struct ApprovalRequest: Codable, Identifiable, Hashable {
     public let details: String
     public var status: String // "pending", "approved", "denied"
     public let timestamp: Date
+    public let responseMethod: String?
+    public let threadID: String?
+    public let turnID: String?
     
     enum CodingKeys: String, CodingKey {
         case id
         case toolName
         case details
         case status
-        case timestamp
+        case timestamp, responseMethod, threadID, turnID
     }
     
-    public init(id: String, toolName: String, details: String, status: String, timestamp: Date) {
+    public init(
+        id: String,
+        toolName: String,
+        details: String,
+        status: String,
+        timestamp: Date,
+        responseMethod: String? = nil,
+        threadID: String? = nil,
+        turnID: String? = nil
+    ) {
         self.id = id
         self.toolName = toolName
         self.details = details
         self.status = status
         self.timestamp = timestamp
+        self.responseMethod = responseMethod
+        self.threadID = threadID
+        self.turnID = turnID
     }
     
     public init(from decoder: Decoder) throws {
@@ -29,6 +44,9 @@ public struct ApprovalRequest: Codable, Identifiable, Hashable {
         self.toolName = try container.decode(String.self, forKey: .toolName)
         self.details = try container.decode(String.self, forKey: .details)
         self.status = try container.decode(String.self, forKey: .status)
+        self.responseMethod = try container.decodeIfPresent(String.self, forKey: .responseMethod)
+        self.threadID = try container.decodeIfPresent(String.self, forKey: .threadID)
+        self.turnID = try container.decodeIfPresent(String.self, forKey: .turnID)
         
         let dateString = try container.decode(String.self, forKey: .timestamp)
         let formatter = ISO8601DateFormatter()

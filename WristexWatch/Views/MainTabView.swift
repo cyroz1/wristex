@@ -24,7 +24,6 @@ public struct MainTabView: View {
             .tabItem {
                 Label("Approvals", systemImage: "checkmark.shield.fill")
             }
-            .badge(approvalViewModel.approvals.count > 0 ? approvalViewModel.approvals.count : 0)
             
             NavigationStack {
                 GitStatusView()

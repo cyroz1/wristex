@@ -1,145 +1,287 @@
-import Foundation
 import Combine
+import Foundation
+import SwiftSH
 
-#if canImport(WatchKit)
-import WatchKit
-#endif
-
+@MainActor
 public final class SSHManager: ObservableObject {
     public static let shared = SSHManager()
-    
-    // Published properties persisted in UserDefaults
+
     @Published public var host: String {
-        didSet { UserDefaults.standard.set(host, forKey: "wristex_ssh_host") }
+        didSet { defaults.set(host, forKey: Keys.host) }
     }
-    
     @Published public var username: String {
-        didSet { UserDefaults.standard.set(username, forKey: "wristex_ssh_username") }
+        didSet { defaults.set(username, forKey: Keys.username) }
     }
-    
     @Published public var port: Int {
-        didSet { UserDefaults.standard.set(port, forKey: "wristex_ssh_port") }
+        didSet { defaults.set(port, forKey: Keys.port) }
     }
-    
     @Published public var remoteWorkspacePath: String {
-        didSet { UserDefaults.standard.set(remoteWorkspacePath, forKey: "wristex_ssh_workspace") }
+        didSet { defaults.set(remoteWorkspacePath, forKey: Keys.workspace) }
     }
-    
-    // For safety, passwords can be stored in Keychain in production.
-    // For development, we store in UserDefaults or memory.
     @Published public var password: String {
-        didSet { UserDefaults.standard.set(password, forKey: "wristex_ssh_password") }
+        didSet { KeychainStore.write(password, account: Keys.password) }
     }
-    
+    @Published public var privateKeyPEM: String {
+        didSet { KeychainStore.write(privateKeyPEM, account: Keys.privateKeyPEM) }
+    }
+    @Published public var privateKeyPassphrase: String {
+        didSet { KeychainStore.write(privateKeyPassphrase, account: Keys.privateKeyPassphrase) }
+    }
+    @Published public private(set) var connectionState = "Not tested"
+
+    private let defaults = UserDefaults.standard
+
+    private enum Keys {
+        static let host = "wristex_ssh_host"
+        static let username = "wristex_ssh_username"
+        static let port = "wristex_ssh_port"
+        static let workspace = "wristex_ssh_workspace"
+        static let password = "wristex_ssh_password"
+        static let privateKeyPEM = "wristex_ssh_private_key_pem"
+        static let privateKeyPassphrase = "wristex_ssh_private_key_passphrase"
+        static let fingerprintPrefix = "wristex_ssh_fingerprint_"
+    }
+
     private init() {
-        self.host = UserDefaults.standard.string(forKey: "wristex_ssh_host") ?? "localhost"
-        self.username = UserDefaults.standard.string(forKey: "wristex_ssh_username") ?? "amir"
-        self.port = UserDefaults.standard.integer(forKey: "wristex_ssh_port")
-        if self.port == 0 { self.port = 22 }
-        self.remoteWorkspacePath = UserDefaults.standard.string(forKey: "wristex_ssh_workspace") ?? "/Users/amir/Documents/wristex"
-        self.password = UserDefaults.standard.string(forKey: "wristex_ssh_password") ?? ""
+        host = defaults.string(forKey: Keys.host) ?? ""
+        username = defaults.string(forKey: Keys.username) ?? ""
+        let savedPort = defaults.integer(forKey: Keys.port)
+        port = savedPort == 0 ? 22 : savedPort
+        remoteWorkspacePath = defaults.string(forKey: Keys.workspace) ?? ""
+        password = KeychainStore.read(Keys.password)
+        privateKeyPEM = KeychainStore.read(Keys.privateKeyPEM)
+        privateKeyPassphrase = KeychainStore.read(Keys.privateKeyPassphrase)
+
+        // Remove credentials left by early development builds.
+        defaults.removeObject(forKey: Keys.password)
     }
-    
-    /// Executes a command on the remote machine over SSH and returns stdout.
-    /// In local development/macOS preview, this executes locally if the host is "localhost" or "127.0.0.1".
-    public func executeCommand(_ command: String) async throws -> String {
-        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        
-        #if os(macOS)
-        if trimmedHost == "localhost" || trimmedHost == "127.0.0.1" {
-            return try executeLocalCommand(command)
+
+    public var connectionID: String {
+        "\(username)@\(host):\(port)"
+    }
+
+    public var isConfigured: Bool {
+        !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        (!password.isEmpty || !privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
+        (1...65_535).contains(port)
+    }
+
+    public var hasPinnedFingerprint: Bool {
+        defaults.string(forKey: fingerprintKey) != nil
+    }
+
+    public func forgetHostFingerprint() {
+        defaults.removeObject(forKey: fingerprintKey)
+        connectionState = "Host key forgotten"
+    }
+
+    public func testConnection() async throws -> String {
+        connectionState = "Connecting…"
+        do {
+            let output = try await executeCommand(
+                "command -v codex >/dev/null 2>&1 && codex --version || { echo 'Codex CLI not found'; exit 127; }"
+            )
+            let result = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            connectionState = result
+            return result
+        } catch {
+            connectionState = "Connection failed"
+            throw error
         }
-        #endif
-        
-        // --- Production SSH client connection block ---
-        // In actual watchOS execution, we would utilize a library like Shout or SwiftSSH:
-        //
-        // let connection = try SSH.connect(host: host, port: port, username: username, auth: .password(password))
-        // let response = try connection.execute(command)
-        // return response.stdout
-        //
-        // Since we are running in simulator/preview mode without the full third-party SSH framework linked,
-        // we simulate a network response if not running on macOS local fallback.
-        
-        try await Task.sleep(nanoseconds: 1_000_000_000) // Simulate network latency
-        
-        // Simulating return content based on the command requested
-        if command.contains("git status") {
-            return """
-            On branch main
-            Your branch is up to date with 'origin/main'.
-            Changes not staged for commit:
-              modified:   WristexWatch/Views/SettingsView.swift
-              modified:   WristexWatch/Services/SSHManager.swift
-            Untracked files:
-              WristexWatch/Views/LoginView.swift
-            """
-        } else if command.contains("ls -la ~/.codex/threads/") {
-            return """
-            drwxr-xr-x  3 amir  staff   96 Jul 17 16:30 .
-            drwxr-xr-x  4 amir  staff  128 Jul 17 16:30 ..
-            -rw-r--r--  1 amir  staff  256 Jul 17 16:30 thread-1.json
-            -rw-r--r--  1 amir  staff  256 Jul 17 16:30 thread-2.json
-            """
-        } else if command.contains("cat ~/.codex/threads/thread-1.json") {
-            return """
-            {
-              "id": "thread-1",
-              "title": "Build login layout",
-              "lastMessage": "Should we add a FaceID toggle?",
-              "activeModel": "gemini-1-5",
-              "messages": [
-                {"sender": "agent", "content": "Hello! I am ready to help you build the login layout.", "timestamp": "2026-07-17T20:26:00.000Z"},
-                {"sender": "user", "content": "Great, use SwiftUI and SF Symbols for the buttons.", "timestamp": "2026-07-17T20:27:00.000Z"},
-                {"sender": "agent", "content": "Got it. I have drafted a layout. Should we add a FaceID toggle?", "timestamp": "2026-07-17T20:28:00.000Z"}
-              ]
+    }
+
+    public func executeCommand(_ commandText: String) async throws -> String {
+        let configuration = try snapshot()
+        let session = try SSHSession(
+            host: configuration.host,
+            port: UInt16(configuration.port)
+        )
+        session.timeout = 20
+        session.log.enabled = false
+
+        do {
+            try await connect(session)
+            try validateFingerprint(session, configuration: configuration)
+            try await authenticate(session, configuration: configuration)
+            // Codex turns can legitimately run for several minutes.
+            session.timeout = 600
+            let output = try await run(commandText, on: session)
+            await disconnect(session)
+            return output
+        } catch {
+            await disconnect(session)
+            throw error
+        }
+    }
+
+    /// Opens an authenticated SSH session for a long-lived bidirectional channel.
+    ///
+    /// The Codex app server speaks JSON-RPC over stdin/stdout, so a one-shot
+    /// command channel is not sufficient for approvals or streamed turn events.
+    public func openAuthenticatedSession() async throws -> SSHSession {
+        let configuration = try snapshot()
+        let session = try SSHSession(
+            host: configuration.host,
+            port: UInt16(configuration.port)
+        )
+        session.timeout = 20
+        session.log.enabled = false
+
+        do {
+            try await connect(session)
+            try validateFingerprint(session, configuration: configuration)
+            try await authenticate(session, configuration: configuration)
+            session.timeout = 600
+            session.setCallbackQueue(queue: .main)
+            return session
+        } catch {
+            await disconnect(session)
+            throw error
+        }
+    }
+
+    public func openAuthenticatedShell() async throws -> SSHShell {
+        let session = try await openAuthenticatedSession()
+        do {
+            return try SSHShell(session: session)
+        } catch {
+            await disconnect(session)
+            throw error
+        }
+    }
+
+    private struct Configuration: Sendable {
+        let host: String
+        let username: String
+        let port: Int
+        let password: String
+        let privateKeyPEM: String
+        let privateKeyPassphrase: String
+    }
+
+    private var fingerprintKey: String {
+        Keys.fingerprintPrefix + connectionID
+    }
+
+    private func snapshot() throws -> Configuration {
+        let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanHost.isEmpty, !cleanUser.isEmpty, (1...65_535).contains(port) else {
+            throw SSHConnectionError.invalidSettings
+        }
+        guard !password.isEmpty || !privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SSHConnectionError.missingCredentials
+        }
+        return Configuration(
+            host: cleanHost,
+            username: cleanUser,
+            port: port,
+            password: password,
+            privateKeyPEM: privateKeyPEM,
+            privateKeyPassphrase: privateKeyPassphrase
+        )
+    }
+
+    private func connect(_ session: SSHSession) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            session.connect { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
             }
-            """
-        } else if command.contains("cat ~/.codex/pending_approvals.json") {
-            return """
-            [
-              {
-                "id": "appr-1",
-                "toolName": "run_command",
-                "details": "xcodebuild -scheme WristexWatch -destination \\"platform=watchOS Simulator\\"",
-                "status": "pending",
-                "timestamp": "2026-07-17T20:28:00.000Z"
-              }
-            ]
-            """
-        } else if command.contains("git pull") {
-            return "Already up to date."
-        } else if command.contains("git push") {
-            return "Everything up-to-date"
         }
-        
-        return "SSH command succeeded (Simulated output)."
     }
-    
-    #if os(macOS)
-    /// Runs a command locally on macOS using Process (only compiled on macOS dev environments).
-    private func executeLocalCommand(_ command: String) throws -> String {
-        let process = Process()
-        let pipe = Pipe()
-        
-        process.standardOutput = pipe
-        process.standardError = pipe
-        // Run inside zsh shell to support command line chains and cd
-        process.arguments = ["-c", command]
-        process.launchPath = "/bin/zsh"
-        process.launch()
-        process.waitUntilExit()
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else {
-            throw URLError(.cannotDecodeContentData)
+
+    private func authenticate(_ session: SSHSession, configuration: Configuration) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let challenge: AuthenticationChallenge
+            let keyText = configuration.privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let key = keyText.data(using: .utf8), !key.isEmpty {
+                challenge = .byPublicKeyFromMemory(
+                    username: configuration.username,
+                    password: configuration.privateKeyPassphrase,
+                    publicKey: nil,
+                    privateKey: key
+                )
+            } else {
+                challenge = .byPassword(username: configuration.username, password: configuration.password)
+            }
+            session.authenticate(challenge) { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            }
         }
-        
-        guard process.terminationStatus == 0 else {
-            throw NSError(domain: "LocalCommandError", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: output])
-        }
-        
-        return output
     }
-    #endif
+
+    private func run(_ commandText: String, on session: SSHSession) async throws -> String {
+        let command = try SSHCommand(session: session)
+        let marker = "__WRISTEX_EXIT_STATUS__"
+        let wrappedCommand = "(\(commandText)) 2>&1; wristex_status=$?; printf '\\n\(marker)%s\\n' \"$wristex_status\""
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+            command.execute(wrappedCommand) { _, output, error in
+                if let error { continuation.resume(throwing: error) }
+                else {
+                    let rawOutput = output ?? ""
+                    guard let markerRange = rawOutput.range(of: marker, options: .backwards),
+                          let status = Int(rawOutput[markerRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                        continuation.resume(throwing: SSHConnectionError.missingExitStatus)
+                        return
+                    }
+                    let cleanOutput = String(rawOutput[..<markerRange.lowerBound])
+                        .trimmingCharacters(in: .newlines)
+                    if status == 0 {
+                        continuation.resume(returning: cleanOutput)
+                    } else {
+                        continuation.resume(throwing: RemoteCommandError(status: status, output: cleanOutput))
+                    }
+                }
+            }
+        }
+    }
+
+    private func disconnect(_ session: SSHSession) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            session.disconnect { continuation.resume() }
+        }
+    }
+
+    private func validateFingerprint(_ session: SSHSession, configuration: Configuration) throws {
+        guard let fingerprint = session.fingerprint[.sha1], !fingerprint.isEmpty else {
+            throw SSHConnectionError.missingFingerprint
+        }
+        let key = Keys.fingerprintPrefix + "\(configuration.username)@\(configuration.host):\(configuration.port)"
+        if let pinned = defaults.string(forKey: key), pinned != fingerprint {
+            throw SSHConnectionError.hostKeyChanged
+        }
+        if defaults.string(forKey: key) == nil {
+            defaults.set(fingerprint, forKey: key)
+        }
+    }
+}
+
+enum SSHConnectionError: LocalizedError {
+    case invalidSettings
+    case missingCredentials
+    case missingFingerprint
+    case hostKeyChanged
+    case missingExitStatus
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidSettings: return "Enter a valid host, username, and port."
+        case .missingCredentials: return "Enter an SSH password or private key."
+        case .missingFingerprint: return "The server did not provide a host fingerprint."
+        case .hostKeyChanged: return "The SSH host key changed. Verify the server, then forget the saved key."
+        case .missingExitStatus: return "The SSH command ended without an exit status."
+        }
+    }
+}
+
+struct RemoteCommandError: LocalizedError {
+    let status: Int
+    let output: String
+
+    var errorDescription: String? {
+        output.isEmpty ? "Remote command failed (exit \(status))." : output
+    }
 }

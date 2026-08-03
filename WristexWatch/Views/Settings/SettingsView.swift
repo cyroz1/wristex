@@ -2,81 +2,108 @@ import SwiftUI
 
 public struct SettingsView: View {
     @ObservedObject private var sshManager = SSHManager.shared
-    
-    @State private var localHost: String = ""
-    @State private var localUsername: String = ""
-    @State private var localPortText: String = ""
-    @State private var localWorkspacePath: String = ""
-    @State private var localPassword: String = ""
-    
+
+    @State private var localHost = ""
+    @State private var localUsername = ""
+    @State private var localPortText = "22"
+    @State private var localWorkspacePath = ""
+    @State private var localPassword = ""
+    @State private var localPrivateKeyPEM = ""
+    @State private var localPrivateKeyPassphrase = ""
+    @State private var isTesting = false
+    @State private var feedback: String?
+
     public init() {}
-    
+
     public var body: some View {
         Form {
-            Section(header: Text("SSH Remote Host").font(.system(.footnote, design: .rounded)).foregroundColor(.indigo)) {
-                TextField("IP or Hostname", text: $localHost, prompt: Text("localhost"))
+            Section("SSH Host") {
+                TextField("Hostname", text: $localHost)
                     .textContentType(.URL)
                     .autocorrectionDisabled()
-                
-                TextField("Username", text: $localUsername, prompt: Text("amir"))
+                TextField("Username", text: $localUsername)
                     .textContentType(.username)
                     .autocorrectionDisabled()
-                
-                TextField("Port", text: $localPortText, prompt: Text("22"))
-                    .keyboardType(.numberPad)
-                
-                TextField("Workspace Path", text: $localWorkspacePath, prompt: Text("/path/to/project"))
+                TextField("Port", text: $localPortText)
+                TextField("Workspace", text: $localWorkspacePath)
                     .autocorrectionDisabled()
             }
-            
-            Section(header: Text("Security").font(.system(.footnote, design: .rounded)).foregroundColor(.orange)) {
-                SecureField("Password / Key Phrase", text: $localPassword, prompt: Text("Enter password"))
-                    .autocorrectionDisabled()
+
+            Section("Authentication") {
+                SecureField("SSH password", text: $localPassword)
+                    .textContentType(.password)
+                SecureField("PEM private key (optional)", text: $localPrivateKeyPEM)
+                SecureField("Key passphrase", text: $localPrivateKeyPassphrase)
+                    .textContentType(.password)
+                Text("Saved in Keychain")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
-            
+
             Section {
-                Button(action: saveSettings) {
+                Button {
+                    Task { await saveAndTest() }
+                } label: {
                     HStack {
-                        Spacer()
+                        if isTesting { ProgressView() }
                         Image(systemName: "bolt.horizontal.fill")
-                        Text("Connect Remote")
-                        Spacer()
+                        Text(isTesting ? "Testing…" : "Save & Test")
                     }
-                    .font(.system(.body, design: .rounded))
-                    .foregroundColor(.white)
                 }
-                .listRowBackground(
-                    LinearGradient(
-                        colors: [.indigo, .purple],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                .disabled(isTesting)
+
+                if sshManager.hasPinnedFingerprint {
+                    Button("Forget Host Key", role: .destructive) {
+                        sshManager.forgetHostFingerprint()
+                        feedback = "Host key forgotten."
+                    }
+                }
+
+                if let feedback {
+                    Text(feedback)
+                        .font(.caption2)
+                        .foregroundColor(feedback.hasPrefix("Connected") ? .green : .red)
+                }
             }
         }
         .navigationTitle("SSH Settings")
-        .onAppear {
-            localHost = sshManager.host
-            localUsername = sshManager.username
-            localPortText = String(sshManager.port)
-            localWorkspacePath = sshManager.remoteWorkspacePath
-            localPassword = sshManager.password
-        }
+        .onAppear(perform: loadSettings)
     }
-    
-    private func saveSettings() {
-        sshManager.host = localHost
-        sshManager.username = localUsername
+
+    private func loadSettings() {
+        localHost = sshManager.host
+        localUsername = sshManager.username
+        localPortText = String(sshManager.port)
+        localWorkspacePath = sshManager.remoteWorkspacePath
+        localPassword = sshManager.password
+        localPrivateKeyPEM = sshManager.privateKeyPEM
+        localPrivateKeyPassphrase = sshManager.privateKeyPassphrase
+    }
+
+    private func saveAndTest() async {
+        await CodexAppServerClient.shared.disconnect()
+        sshManager.host = localHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        sshManager.username = localUsername.trimmingCharacters(in: .whitespacesAndNewlines)
         sshManager.port = Int(localPortText) ?? 22
-        sshManager.remoteWorkspacePath = localWorkspacePath
+        sshManager.remoteWorkspacePath = localWorkspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
         sshManager.password = localPassword
-        
-        HapticManager.shared.playSuccess()
+        sshManager.privateKeyPEM = localPrivateKeyPEM
+        sshManager.privateKeyPassphrase = localPrivateKeyPassphrase
+
+        isTesting = true
+        feedback = nil
+        do {
+            let status = try await RemoteCodexService.shared.testConnection()
+            feedback = "Connected: \(status)"
+            HapticManager.shared.playSuccess()
+        } catch {
+            feedback = error.localizedDescription
+            HapticManager.shared.playFailure()
+        }
+        isTesting = false
     }
 }
 
 struct SettingsView_Previews: PreviewProvider {
-    public static var previews: some View {
-        SettingsView()
-    }
+    static var previews: some View { SettingsView() }
 }

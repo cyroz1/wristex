@@ -1,192 +1,181 @@
-import Foundation
 import Combine
+import Foundation
 
 @MainActor
 public final class ThreadDetailViewModel: ObservableObject {
-    public let thread: AgentThread
-    
+    @Published public private(set) var thread: AgentThread
     @Published public var messages: [ThreadMessage] = []
     @Published public var models: [ModelOption] = []
     @Published public var activeModelId: String
     @Published public var isLoading = false
     @Published public var isSending = false
-    @Published public var errorMessage: String? = nil
-    
-    private let ssh = SSHManager.shared
-    private var pollingTask: Task<Void, Never>? = nil
-    
+    @Published public var isVoiceRecording = false
+    @Published public var errorMessage: String?
+
+    private let store = ThreadStore.shared
+    private let codex = RemoteCodexService.shared
+    private var streamingMessageID: UUID?
+
     public init(thread: AgentThread) {
         self.thread = thread
-        self.activeModelId = thread.activeModel
+        activeModelId = thread.activeModel
     }
-    
+
     public func loadMessages() async {
-        errorMessage = nil
         do {
-            let cmd = """
-            mkdir -p ~/.codex && \
-            if [ ! -f ~/.codex/messages_\(thread.id).json ]; then \
-              echo '[]' > ~/.codex/messages_\(thread.id).json; \
-            fi && \
-            cat ~/.codex/messages_\(thread.id).json
-            """
-            let stdout = try await ssh.executeCommand(cmd)
-            guard let data = stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) else {
-                throw URLError(.cannotDecodeContentData)
-            }
-            let decoder = JSONDecoder()
-            self.messages = try decoder.decode([ThreadMessage].self, from: data)
+            let remoteMessages = try await codex.readMessages(threadID: thread.id)
+            messages = remoteMessages
+            store.save(remoteMessages, for: thread.id)
         } catch {
-            self.errorMessage = "Failed to load messages: \(error.localizedDescription)"
+            messages = store.messages(for: thread.id)
+            errorMessage = error.localizedDescription
         }
     }
-    
+
     public func loadModels() async {
         do {
-            let cmd = """
-            if [ ! -f ~/.codex/models.json ]; then \
-              echo '[{"id":"gpt-4o","name":"GPT-4o (Standard)"},{"id":"claude-3-5","name":"Claude 3.5 Sonnet"},{"id":"gemini-1-5","name":"Gemini 1.5 Pro"}]' > ~/.codex/models.json; \
-            fi && \
-            cat ~/.codex/models.json
-            """
-            let stdout = try await ssh.executeCommand(cmd)
-            guard let data = stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) else {
-                throw URLError(.cannotDecodeContentData)
-            }
-            let decoder = JSONDecoder()
-            self.models = try decoder.decode([ModelOption].self, from: data)
+            let remoteModels = try await codex.loadModels()
+            models = [ModelOption(id: "default", name: "Host Default")] + remoteModels
         } catch {
-            // Fallback default options
-            self.models = [
-                ModelOption(id: "gpt-4o", name: "GPT-4o (Standard)"),
-                ModelOption(id: "claude-3-5", name: "Claude 3.5 Sonnet"),
-                ModelOption(id: "gemini-1-5", name: "Gemini 1.5 Pro")
-            ]
+            models = [ModelOption(id: "default", name: "Host Default")]
         }
     }
-    
+
     public func sendMessage(_ text: String) async {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let cleanText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanText.isEmpty, !isSending else { return }
+
         isSending = true
         errorMessage = nil
-        
-        let tempMessage = ThreadMessage(sender: "user", content: text, timestamp: Date())
-        self.messages.append(tempMessage)
-        
+        messages.append(ThreadMessage(sender: "user", content: cleanText, timestamp: Date()))
+        store.save(messages, for: thread.id)
         HapticManager.shared.playClick()
-        
+
         do {
-            let textEscaped = text.replacingOccurrences(of: "'", with: "'\\''")
-            // Execute python to append user message AND update lastMessage in threads.json
-            let cmd = """
-            python3 -c "
-            import json, os, datetime
-            msg_path = os.path.expanduser('~/.codex/messages_\(thread.id).json')
-            thread_path = os.path.expanduser('~/.codex/threads.json')
-            
-            # 1. Update message log
-            try:
-                msgs = json.load(open(msg_path))
-            except:
-                msgs = []
-            
-            new_msg = {'sender': 'user', 'content': '\(textEscaped)', 'timestamp': datetime.datetime.utcnow().isoformat() + 'Z'}
-            msgs.append(new_msg)
-            
-            with open(msg_path, 'w') as f:
-                json.dump(msgs, f)
-                
-            # 2. Update threads.json metadata
-            try:
-                threads = json.load(open(thread_path))
-                for t in threads:
-                    if t['id'] == '\(thread.id)':
-                        t['lastMessage'] = '\(textEscaped)'
-                with open(thread_path, 'w') as f:
-                    json.dump(threads, f)
-            except Exception as e:
-                pass
-                
-            # Simulate agent auto-reply creation
-            try:
-                agent_msg = {'sender': 'agent', 'content': 'Direct SSH action triggered for: \"\(textEscaped)\". Let me process that.', 'timestamp': datetime.datetime.utcnow().isoformat() + 'Z'}
-                msgs.append(agent_msg)
-                with open(msg_path, 'w') as f:
-                    json.dump(msgs, f)
-                for t in threads:
-                    if t['id'] == '\(thread.id)':
-                        t['lastMessage'] = agent_msg['content']
-                with open(thread_path, 'w') as f:
-                    json.dump(threads, f)
-            except:
-                pass
-            "
-            """
-            _ = try await ssh.executeCommand(cmd)
+            let result = try await codex.send(cleanText, thread: thread)
+            if let streamingMessageID,
+               let index = messages.firstIndex(where: { $0.id == streamingMessageID }) {
+                messages[index] = ThreadMessage(
+                    id: streamingMessageID,
+                    sender: "agent",
+                    content: result.reply,
+                    timestamp: Date()
+                )
+            } else {
+                messages.append(ThreadMessage(sender: "agent", content: result.reply, timestamp: Date()))
+            }
+            self.streamingMessageID = nil
+            thread.codexSessionID = result.sessionID
+            thread.lastMessage = result.reply
+            store.save(messages, for: thread.id)
+            store.save(thread)
             HapticManager.shared.playSuccess()
-            
-            // Reload message history immediately
-            await loadMessages()
         } catch {
-            self.errorMessage = "Failed to send message: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             HapticManager.shared.playFailure()
         }
         isSending = false
     }
-    
+
     public func selectModel(_ modelId: String) async {
         do {
-            let cmd = """
-            python3 -c "
-            import json, os
-            path = os.path.expanduser('~/.codex/threads.json')
-            try:
-                data = json.load(open(path))
-                for t in data:
-                    if t['id'] == '\(thread.id)':
-                        t['activeModel'] = '\(modelId)'
-                with open(path, 'w') as f:
-                    json.dump(data, f)
-                print('success')
-            except Exception as e:
-                print('error: ' + str(e))
-            "
-            """
-            let stdout = try await ssh.executeCommand(cmd)
-            if stdout.contains("success") {
-                self.activeModelId = modelId
-                HapticManager.shared.playSuccess()
-            } else {
-                self.errorMessage = "Host error: \(stdout)"
-                HapticManager.shared.playFailure()
-            }
+            try await codex.updateThreadModel(thread.id, modelID: modelId)
+            activeModelId = modelId
+            thread.activeModel = modelId
+            store.save(thread)
+            HapticManager.shared.playSuccess()
         } catch {
-            self.errorMessage = "Failed to update model: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             HapticManager.shared.playFailure()
         }
     }
-    
-    public func startPolling() {
-        stopPolling()
-        
-        pollingTask = Task {
-            await loadMessages()
-            await loadModels()
-            
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                if Task.isCancelled { break }
-                await loadMessages()
-            }
+
+    public func interruptTurn() async {
+        do {
+            try await codex.interrupt(threadID: thread.id)
+            isSending = false
+            streamingMessageID = nil
+            HapticManager.shared.playClick()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
-    
-    public func stopPolling() {
-        pollingTask?.cancel()
-        pollingTask = nil
+
+    public func startVoiceTranscription() async -> Bool {
+        do {
+            try await codex.startVoiceTranscription(threadID: thread.id)
+            isVoiceRecording = true
+            HapticManager.shared.playStart()
+            return true
+        } catch {
+            errorMessage = "GPT voice unavailable: " + error.localizedDescription
+            HapticManager.shared.playFailure()
+            return false
+        }
     }
-    
-    deinit {
-        pollingTask?.cancel()
+
+    public func stopVoiceTranscription() async {
+        do {
+            try await codex.stopVoiceTranscription(threadID: thread.id)
+            isVoiceRecording = false
+            HapticManager.shared.playStop()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func startPolling() {
+        codex.setNotificationHandler { [weak self] method, params in
+            self?.handleRemoteNotification(method: method, params: params)
+        }
+        Task {
+            await loadMessages()
+            await loadModels()
+        }
+    }
+
+    public func stopPolling() {
+        codex.setNotificationHandler(nil)
+        if isVoiceRecording {
+            Task {
+                try? await codex.stopVoiceTranscription(threadID: thread.id)
+            }
+            isVoiceRecording = false
+        }
+    }
+
+    private func handleRemoteNotification(method: String, params: [String: Any]) {
+        guard params["threadId"] as? String == thread.id else { return }
+        if method == "thread/realtime/transcript/done",
+           params["role"] as? String == "user",
+           let text = params["text"] as? String {
+            isVoiceRecording = false
+            let dictatedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !dictatedText.isEmpty {
+                Task { await sendMessage(dictatedText) }
+            }
+            return
+        }
+        guard method == "item/agentMessage/delta",
+              let delta = params["delta"] as? String,
+              !delta.isEmpty else {
+            return
+        }
+
+        if let streamingMessageID,
+           let index = messages.firstIndex(where: { $0.id == streamingMessageID }) {
+            let current = messages[index]
+            messages[index] = ThreadMessage(
+                id: streamingMessageID,
+                sender: "agent",
+                content: current.content + delta,
+                timestamp: current.timestamp
+            )
+        } else {
+            let id = UUID()
+            streamingMessageID = id
+            messages.append(ThreadMessage(id: id, sender: "agent", content: delta, timestamp: Date()))
+        }
+        store.save(messages, for: thread.id)
     }
 }

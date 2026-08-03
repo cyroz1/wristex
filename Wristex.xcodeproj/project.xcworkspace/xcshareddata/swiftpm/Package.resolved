@@ -1,0 +1,14 @@
+{
+  "originHash" : "9a763f1d3feb3977fd4b6061dc0b95e34e70b3a46274d334deb55efe9e0840da",
+  "pins" : [
+    {
+      "identity" : "libssh2prebuild",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/migueldeicaza/Libssh2Prebuild.git",
+      "state" : {
+        "revision" : "242b5e3746076f93a284df21a2af4567fcae094a"
+      }
+    }
+  ],
+  "version" : 3
+}

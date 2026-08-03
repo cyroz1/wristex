@@ -18,7 +18,7 @@ public final class GitViewModel: ObservableObject {
         errorMessage = nil
         do {
             let cmd = """
-            cd "\(ssh.remoteWorkspacePath)" && python3 -c "
+            cd \(Shell.quote(ssh.remoteWorkspacePath)) && python3 -c "
             import subprocess, json
             try:
                 branch = subprocess.check_output(['git', 'branch', '--show-current']).decode('utf-8').strip()
@@ -92,12 +92,12 @@ public final class GitViewModel: ObservableObject {
             let cmd: String
             switch action {
             case .pull:
-                cmd = "cd \"\(ssh.remoteWorkspacePath)\" && git pull"
+                cmd = "cd \(Shell.quote(ssh.remoteWorkspacePath)) && git pull"
             case .push:
-                cmd = "cd \"\(ssh.remoteWorkspacePath)\" && git push"
+                cmd = "cd \(Shell.quote(ssh.remoteWorkspacePath)) && git push"
             case .commit:
-                let msgEscaped = (commitMessage ?? "Automated commit from Wristex").replacingOccurrences(of: "'", with: "'\\''")
-                cmd = "cd \"\(ssh.remoteWorkspacePath)\" && git add . && git commit -m '\(msgEscaped)'"
+                let message = commitMessage ?? "Automated commit from Wristex"
+                cmd = "cd \(Shell.quote(ssh.remoteWorkspacePath)) && git add . && git commit -m \(Shell.quote(message))"
             }
             
             let stdout = try await ssh.executeCommand(cmd)

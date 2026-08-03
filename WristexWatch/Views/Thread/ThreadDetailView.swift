@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchKit
 
 public struct ThreadDetailView: View {
     @StateObject private var viewModel: ThreadDetailViewModel
@@ -93,7 +94,7 @@ public struct ThreadDetailView: View {
                     }
                     .padding(.horizontal, 4)
                 }
-                .onChange(of: viewModel.messages.count) { _ in
+                .onChange(of: viewModel.messages.count) {
                     if let lastMsg = viewModel.messages.last {
                         withAnimation {
                             proxy.scrollTo(lastMsg.id, anchor: .bottom)
@@ -121,20 +122,55 @@ public struct ThreadDetailView: View {
                         }
                     }
                 
-                // Mic Button to trigger dictation explicitly if preferred
-                Button(action: {
-                    // Triggers the Apple Watch system dictation sheet
-                    presentDictation()
-                }) {
-                    Image(systemName: "mic.fill")
-                        .font(.body)
+                if viewModel.isVoiceRecording {
+                    Button {
+                        Task { await viewModel.stopVoiceTranscription() }
+                    } label: {
+                        Image(systemName: "waveform")
+                            .font(.body)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .frame(width: 44)
+                } else if viewModel.isSending {
+                    Button {
+                        Task { await viewModel.interruptTurn() }
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.body)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .frame(width: 44)
+                } else {
+                    Button {
+                        Task {
+                            // Prefer Codex realtime transcription over SSH;
+                            // fall back to native watchOS dictation if the
+                            // remote Codex build does not support it.
+                            if !(await viewModel.startVoiceTranscription()) {
+                                presentDictation()
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "mic.fill")
+                            .font(.body)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.indigo)
+                    .frame(width: 44)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.indigo)
-                .frame(width: 44)
             }
             .padding(.top, 4)
             .padding(.horizontal, 2)
+
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .font(.system(size: 9))
+                    .foregroundColor(.red)
+                    .lineLimit(3)
+                    .padding(.horizontal, 4)
+            }
         }
         .navigationTitle(viewModel.thread.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -196,7 +232,7 @@ public struct ThreadDetailView: View {
         HapticManager.shared.playStart()
         
         #if os(watchOS)
-        let rootController = WKExtension.shared().visibleInterfaceController
+        let rootController = WKApplication.shared().visibleInterfaceController
         rootController?.presentTextInputController(withSuggestions: nil, allowedInputMode: .plain) { results in
             guard let results = results, let firstResult = results.first as? String else {
                 HapticManager.shared.playStop()

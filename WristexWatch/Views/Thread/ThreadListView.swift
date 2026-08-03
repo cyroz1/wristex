@@ -9,6 +9,13 @@ public struct ThreadListView: View {
     
     public var body: some View {
         List {
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .lineLimit(3)
+            }
+
             Button(action: { showingNewThreadAlert = true }) {
                 HStack {
                     Image(systemName: "plus.bubble.fill")
@@ -53,8 +60,8 @@ public struct ThreadListView: View {
                 .padding(.vertical, 20)
                 .listRowBackground(Color.clear)
             } else {
-                ForEach(viewModel.threads) { thread in
-                    NavigationLink(destination: ThreadDetailView(thread: thread)) {
+                    ForEach(viewModel.threads) { thread in
+                        NavigationLink(destination: ThreadDetailView(thread: thread)) {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(thread.title)
@@ -76,9 +83,22 @@ public struct ThreadListView: View {
                                 .foregroundColor(.secondary)
                                 .lineLimit(2)
                         }
-                        .padding(.vertical, 4)
+                            .padding(.vertical, 4)
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                Task { await viewModel.delete(thread) }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            Button {
+                                Task { await viewModel.archive(thread) }
+                            } label: {
+                                Label("Archive", systemImage: "archivebox")
+                            }
+                            .tint(.orange)
+                        }
                     }
-                }
             }
         }
         .navigationTitle("Threads")
@@ -120,6 +140,7 @@ public struct ThreadListView: View {
     
     private func modelDisplayName(_ modelId: String) -> String {
         switch modelId {
+        case "default": return "Default"
         case "gpt-4o": return "GPT-4"
         case "claude-3-5": return "Claude"
         case "gemini-1-5": return "Gemini"
