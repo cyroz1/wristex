@@ -10,8 +10,12 @@ public struct SettingsView: View {
     @State private var localPassword = ""
     @State private var localPrivateKeyPEM = ""
     @State private var localPrivateKeyPassphrase = ""
+    @State private var localOpenAIAPIKey = ""
+    @State private var localChatModel = "gpt-4o-mini"
     @State private var isTesting = false
+    @State private var isTestingChat = false
     @State private var feedback: String?
+    @State private var chatFeedback: String?
 
     public init() {}
 
@@ -40,6 +44,34 @@ public struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
+            Section("Chat API") {
+                SecureField("OpenAI API key", text: $localOpenAIAPIKey)
+                    .textContentType(.password)
+                TextField("Chat model", text: $localChatModel)
+                    .autocorrectionDisabled()
+                Text("The key is stored in Keychain. Chat calls api.openai.com directly; it is separate from Codex SSH.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+
+                Button {
+                    ChatService.shared.configure(apiKey: localOpenAIAPIKey, model: localChatModel)
+                    Task { await testChatAPI() }
+                } label: {
+                    HStack {
+                        if isTestingChat { ProgressView() }
+                        Image(systemName: "bubble.left.and.bubble.right")
+                        Text(isTestingChat ? "Testing…" : "Test Chat API")
+                    }
+                }
+                .disabled(isTestingChat)
+
+                if let chatFeedback {
+                    Text(chatFeedback)
+                        .font(.caption2)
+                        .foregroundColor(chatFeedback == "Chat API connected." ? .green : .red)
+                }
+            }
+
             Section {
                 Button {
                     Task { await saveAndTest() }
@@ -66,7 +98,7 @@ public struct SettingsView: View {
                 }
             }
         }
-        .navigationTitle("SSH Settings")
+        .navigationTitle("Settings")
         .onAppear(perform: loadSettings)
     }
 
@@ -78,6 +110,8 @@ public struct SettingsView: View {
         localPassword = sshManager.password
         localPrivateKeyPEM = sshManager.privateKeyPEM
         localPrivateKeyPassphrase = sshManager.privateKeyPassphrase
+        localOpenAIAPIKey = ChatService.shared.apiKey
+        localChatModel = ChatService.shared.model
     }
 
     private func saveAndTest() async {
@@ -89,6 +123,7 @@ public struct SettingsView: View {
         sshManager.password = localPassword
         sshManager.privateKeyPEM = localPrivateKeyPEM
         sshManager.privateKeyPassphrase = localPrivateKeyPassphrase
+        ChatService.shared.configure(apiKey: localOpenAIAPIKey, model: localChatModel)
 
         isTesting = true
         feedback = nil
@@ -101,6 +136,20 @@ public struct SettingsView: View {
             HapticManager.shared.playFailure()
         }
         isTesting = false
+    }
+
+    private func testChatAPI() async {
+        isTestingChat = true
+        chatFeedback = nil
+        do {
+            try await ChatService.shared.testConnection()
+            chatFeedback = "Chat API connected."
+            HapticManager.shared.playSuccess()
+        } catch {
+            chatFeedback = error.localizedDescription
+            HapticManager.shared.playFailure()
+        }
+        isTestingChat = false
     }
 }
 

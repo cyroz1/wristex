@@ -14,27 +14,30 @@ Wristex is a watchOS remote control for Codex running on an Oracle Cloud Linux s
 - Review and answer app-server approval requests for commands, file changes, user input, and MCP elicitation.
 - Dictate with Codex realtime transcription over SSH, with native watchOS dictation fallback.
 - Inspect remote Git status and run pull, commit, and push actions.
+- Switch to Chat mode for a separate OpenAI API conversation with streamed replies.
+- Keep Chat history on the watch; configure the API key and model in Settings.
 - Cache the last known threads and messages locally for short offline periods.
 
 ## Architecture
 
 ```text
 Apple Watch
+    ├── Direct HTTPS ──► OpenAI Responses API (Chat mode)
     │
-    │ Direct authenticated SSH
-    ▼
-Oracle Linux server
-    │
-    └── codex app-server --stdio
-             │
-             ├── JSON-RPC thread and turn APIs
-             ├── streamed events and thread status
-             ├── approval requests
-             ├── model and settings APIs
-             └── realtime voice transcription
+    └── Direct authenticated SSH ──► Oracle Linux server (Codex mode)
+                                      │
+                                      └── codex app-server --stdio
+                                               │
+                                               ├── JSON-RPC thread and turn APIs
+                                               ├── streamed events and thread status
+                                               ├── approval requests
+                                               ├── model and settings APIs
+                                               └── realtime voice transcription
 ```
 
 `SSHManager` handles authentication, host-key fingerprint pinning, one-shot commands, and the long-lived bidirectional shell used by the app server. `RemoteCodexService` is the app-server JSON-RPC client. Codex remains the source of truth; `ThreadStore` only caches the last successful data in the watch app’s local preferences.
+
+`ChatService` is intentionally separate from Codex: it sends the local Chat transcript directly to OpenAI’s Responses API, streams `response.output_text.delta` events, and keeps the API key in Keychain. Chat does not create Codex threads or receive Codex approvals. See the [Responses API](https://platform.openai.com/docs/api-reference/responses) and [streaming events](https://platform.openai.com/docs/api-reference/responses-streaming) documentation for the upstream protocol.
 
 ## Server requirements
 
@@ -64,6 +67,7 @@ The repository includes `Wristex.xcodeproj` and a watchOS scheme.
 4. Open **SSH Settings** in Wristex and enter the server, username, port, and workspace path.
 5. Authenticate with either an SSH password or a PEM private key and passphrase.
 6. Tap **Save & Test**, then accept the server’s first host-key fingerprint if it is correct.
+7. In **Chat API**, enter an OpenAI API key and a model enabled for your OpenAI project, then tap **Test Chat API**.
 
 SwiftSH and its libssh2 bridge are vendored under `Vendor/SwiftSH` so the direct SSH transport is available to the Xcode target.
 
@@ -102,14 +106,18 @@ The microphone button first attempts Codex realtime transcription through the re
 
 The Git tab runs status, pull, commit, and push commands in the configured remote workspace. Commit stages all files in that workspace, so review the status list before using it.
 
+### Chat
+
+Chat is a separate local conversation. Each send includes the saved Chat transcript in a stateless Responses API request; the API key is stored in Keychain and is never sent through the Codex SSH channel. Clear Chat removes the locally cached transcript.
+
 ## Repository layout
 
 ```text
 WristexWatch/
 ├── Models/       Threads, statuses, goals, settings, messages, approvals, Git, models
-├── Services/     SSH, Keychain, app-server JSON-RPC, local cache, haptics
-├── ViewModels/   Remote thread, approval, Git, and settings state
-└── Views/        Watch UI for threads, controls, approvals, Git, and settings
+├── Services/     SSH, Keychain, app-server JSON-RPC, Chat API, local cache, haptics
+├── ViewModels/   Remote thread, Chat, approval, Git, and settings state
+└── Views/        Watch UI for Chat, threads, controls, approvals, Git, and settings
 Vendor/SwiftSH/   Vendored SSH/libssh2 transport
 Wristex.xcodeproj Xcode project and watchOS scheme
 ```

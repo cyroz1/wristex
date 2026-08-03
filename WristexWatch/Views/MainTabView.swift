@@ -10,6 +10,13 @@ public struct MainTabView: View {
     public var body: some View {
         TabView {
             NavigationStack {
+                ChatView()
+            }
+            .tabItem {
+                Label("Chat", systemImage: "message.fill")
+            }
+
+            NavigationStack {
                 ThreadListView()
                     .environmentObject(threadListViewModel)
             }
