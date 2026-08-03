@@ -1,6 +1,6 @@
 # Wristex
 
-Wristex is a watchOS remote control for Codex running on an Oracle Cloud Linux server. It connects directly to the server over SSH and speaks JSON-RPC to `codex app-server --stdio`; there is no REST backend or relay service.
+Wristex is a watchOS remote control for Codex running on any reachable SSH host. It connects directly to that host over SSH and speaks JSON-RPC to `codex app-server --stdio`; there is no REST backend or relay service. Oracle Cloud Linux is one example, not a requirement.
 
 ## Features
 
@@ -24,7 +24,7 @@ Wristex is a watchOS remote control for Codex running on an Oracle Cloud Linux s
 Apple Watch
     ├── Direct HTTPS ──► OpenAI Responses API (Chat mode)
     │
-    └── Direct authenticated SSH ──► Oracle Linux server (Codex mode)
+    └── Direct authenticated SSH ──► Remote SSH host (Codex mode)
                                       │
                                       └── codex app-server --stdio
                                                │
@@ -39,9 +39,9 @@ Apple Watch
 
 `ChatService` is intentionally separate from Codex: it sends the local Chat transcript directly to OpenAI’s Responses API, streams `response.output_text.delta` events, and keeps the API key in Keychain. Chat microphone recordings are wrapped as WAV and sent to the [file transcription endpoint](https://developers.openai.com/api/docs/guides/speech-to-text) with `gpt-transcribe`; native watchOS dictation remains the fallback. Chat does not create Codex threads or receive Codex approvals. See the [Responses API](https://platform.openai.com/docs/api-reference/responses) and [streaming events](https://platform.openai.com/docs/api-reference/responses-streaming) documentation for the upstream protocol.
 
-## Server requirements
+## SSH host requirements
 
-The configured Oracle Linux account must have:
+The configured SSH account on any supported host must have:
 
 1. The Codex CLI installed and available on `PATH`.
 2. Codex authentication configured for that account.
@@ -52,7 +52,7 @@ The configured Oracle Linux account must have:
 Verify the CLI before configuring the watch:
 
 ```bash
-ssh user@your-server 'command -v codex && codex --version && codex app-server --help'
+ssh user@your-host 'command -v codex && codex --version && codex app-server --help'
 ```
 
 The app server protocol is experimental in Codex CLI, so keep the server CLI and Wristex deployment aligned when upgrading.

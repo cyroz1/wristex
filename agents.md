@@ -1,6 +1,6 @@
 # Wristex Agent Guidelines
 
-Wristex is a watchOS client for controlling a remote Codex app server. Keep all user-facing summaries short and watch-readable.
+Wristex is a watchOS client for controlling a remote Codex app server over SSH. The host may be Oracle/Linux, macOS, or another supported SSH environment; the only transport requirement is that it can launch `codex app-server --stdio`. Keep all user-facing summaries short and watch-readable.
 
 ## Communication
 
