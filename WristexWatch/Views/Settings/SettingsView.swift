@@ -12,75 +12,77 @@ public struct SettingsView: View {
     @State private var localPrivateKeyPassphrase = ""
     @State private var localOpenAIAPIKey = ""
     @State private var localChatModel = "gpt-4o-mini"
+    @State private var availableChatModels: [String] = []
     @State private var isTesting = false
     @State private var isTestingChat = false
+    @State private var isLoadingChatModels = false
     @State private var feedback: String?
     @State private var chatFeedback: String?
+    @State private var didLoadSettings = false
 
     public init() {}
 
     public var body: some View {
-        Form {
-            Section("SSH Host") {
-                TextField("Hostname", text: $localHost)
-                    .textContentType(.URL)
-                    .autocorrectionDisabled()
-                TextField("Username", text: $localUsername)
-                    .textContentType(.username)
-                    .autocorrectionDisabled()
-                TextField("Port", text: $localPortText)
-                TextField("Workspace", text: $localWorkspacePath)
-                    .autocorrectionDisabled()
-            }
-
-            Section("Authentication") {
-                SecureField("SSH password", text: $localPassword)
-                    .textContentType(.password)
-                SecureField("PEM private key (optional)", text: $localPrivateKeyPEM)
-                SecureField("Key passphrase", text: $localPrivateKeyPassphrase)
-                    .textContentType(.password)
-                Text("Saved in Keychain")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-
-            Section("Chat API") {
-                SecureField("OpenAI API key", text: $localOpenAIAPIKey)
-                    .textContentType(.password)
-                TextField("Chat model", text: $localChatModel)
-                    .autocorrectionDisabled()
-                Text("The key is stored in Keychain. Chat calls api.openai.com directly; it is separate from Codex SSH.")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-
-                Button {
-                    ChatService.shared.configure(apiKey: localOpenAIAPIKey, model: localChatModel)
-                    Task { await testChatAPI() }
+        List {
+            Section("Connection") {
+                NavigationLink {
+                    SSHConnectionSettingsView(
+                        host: $localHost,
+                        username: $localUsername,
+                        portText: $localPortText,
+                        workspacePath: $localWorkspacePath
+                    )
                 } label: {
-                    HStack {
-                        if isTestingChat { ProgressView() }
-                        Image(systemName: "bubble.left.and.bubble.right")
-                        Text(isTestingChat ? "Testing…" : "Test Chat API")
-                    }
+                    SettingsRow(
+                        title: "SSH host",
+                        value: connectionSummary,
+                        systemImage: "network"
+                    )
                 }
-                .disabled(isTestingChat)
 
-                if let chatFeedback {
-                    Text(chatFeedback)
-                        .font(.caption2)
-                        .foregroundColor(chatFeedback == "Chat API connected." ? .green : .red)
+                NavigationLink {
+                    SSHAuthenticationSettingsView(
+                        password: $localPassword,
+                        privateKeyPEM: $localPrivateKeyPEM,
+                        privateKeyPassphrase: $localPrivateKeyPassphrase
+                    )
+                } label: {
+                    SettingsRow(
+                        title: "Authentication",
+                        value: authenticationSummary,
+                        systemImage: "key.fill"
+                    )
                 }
             }
 
-            Section {
+            Section("Chat") {
+                NavigationLink {
+                    ChatSettingsView(
+                        apiKey: $localOpenAIAPIKey,
+                        model: $localChatModel,
+                        availableModels: $availableChatModels,
+                        isLoadingModels: $isLoadingChatModels,
+                        isTesting: $isTestingChat,
+                        feedback: $chatFeedback,
+                        onTest: {
+                            ChatService.shared.configure(apiKey: localOpenAIAPIKey, model: localChatModel)
+                            Task { await testChatAPI() }
+                        }
+                    )
+                } label: {
+                    SettingsRow(
+                        title: "Chat API",
+                        value: chatSummary,
+                        systemImage: "bubble.left.and.bubble.right"
+                    )
+                }
+            }
+
+            Section("Actions") {
                 Button {
                     Task { await saveAndTest() }
                 } label: {
-                    HStack {
-                        if isTesting { ProgressView() }
-                        Image(systemName: "bolt.horizontal.fill")
-                        Text(isTesting ? "Testing…" : "Save & Test")
-                    }
+                    Label(isTesting ? "Testing…" : "Save & Test", systemImage: "bolt.horizontal.fill")
                 }
                 .disabled(isTesting)
 
@@ -95,11 +97,42 @@ public struct SettingsView: View {
                     Text(feedback)
                         .font(.caption2)
                         .foregroundColor(feedback.hasPrefix("Connected") ? .green : .red)
+                        .lineLimit(2)
                 }
             }
         }
         .navigationTitle("Settings")
-        .onAppear(perform: loadSettings)
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            guard !didLoadSettings else { return }
+            didLoadSettings = true
+            sshManager.reloadConfigDefaults()
+            loadSettings()
+            Task { await loadChatModels() }
+        }
+    }
+
+    private var connectionSummary: String {
+        let host = localHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { return "Not configured" }
+        let user = localUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = localPortText.isEmpty ? "22" : localPortText
+        return user.isEmpty ? "\(host):\(port)" : "\(user)@\(host):\(port)"
+    }
+
+    private var authenticationSummary: String {
+        if !localPrivateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Private key"
+        }
+        if !localPassword.isEmpty { return "Password" }
+        return "Not configured"
+    }
+
+    private var chatSummary: String {
+        guard !localOpenAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "API key not set"
+        }
+        return localChatModel
     }
 
     private func loadSettings() {
@@ -112,6 +145,7 @@ public struct SettingsView: View {
         localPrivateKeyPassphrase = sshManager.privateKeyPassphrase
         localOpenAIAPIKey = ChatService.shared.apiKey
         localChatModel = ChatService.shared.model
+        availableChatModels = ChatService.shared.availableModels
     }
 
     private func saveAndTest() async {
@@ -141,8 +175,10 @@ public struct SettingsView: View {
     private func testChatAPI() async {
         isTestingChat = true
         chatFeedback = nil
+        availableChatModels = []
         do {
-            try await ChatService.shared.testConnection()
+            let models = try await ChatService.shared.refreshAvailableModels()
+            applyChatModels(models)
             chatFeedback = "Chat API connected."
             HapticManager.shared.playSuccess()
         } catch {
@@ -150,6 +186,161 @@ public struct SettingsView: View {
             HapticManager.shared.playFailure()
         }
         isTestingChat = false
+    }
+
+    private func loadChatModels() async {
+        guard ChatService.shared.isConfigured else { return }
+        isLoadingChatModels = true
+        defer { isLoadingChatModels = false }
+
+        guard let models = try? await ChatService.shared.refreshAvailableModels() else { return }
+        applyChatModels(models)
+    }
+
+    private func applyChatModels(_ models: [String]) {
+        availableChatModels = models
+        guard !models.contains(localChatModel), let newestModel = models.first else { return }
+
+        localChatModel = newestModel
+        let key = localOpenAIAPIKey.isEmpty ? ChatService.shared.apiKey : localOpenAIAPIKey
+        ChatService.shared.configure(apiKey: key, model: newestModel)
+    }
+}
+
+private struct SettingsRow: View {
+    let title: String
+    let value: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundColor(.indigo)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                Text(value)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+private struct SSHConnectionSettingsView: View {
+    @Binding var host: String
+    @Binding var username: String
+    @Binding var portText: String
+    @Binding var workspacePath: String
+
+    var body: some View {
+        Form {
+            Section("Server") {
+                TextField("Hostname", text: $host)
+                    .textContentType(.URL)
+                    .autocorrectionDisabled()
+                TextField("Username", text: $username)
+                    .textContentType(.username)
+                    .autocorrectionDisabled()
+                TextField("Port", text: $portText)
+            }
+
+            Section("Workspace") {
+                TextField("Remote path", text: $workspacePath)
+                    .autocorrectionDisabled()
+            }
+        }
+        .navigationTitle("SSH Host")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct SSHAuthenticationSettingsView: View {
+    @Binding var password: String
+    @Binding var privateKeyPEM: String
+    @Binding var privateKeyPassphrase: String
+
+    var body: some View {
+        Form {
+            Section("Credentials") {
+                SecureField("SSH password", text: $password)
+                    .textContentType(.password)
+                SecureField("PEM private key", text: $privateKeyPEM)
+                SecureField("Key passphrase", text: $privateKeyPassphrase)
+                    .textContentType(.password)
+            }
+
+            Section {
+                Text("Saved in Keychain")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .navigationTitle("Authentication")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct ChatSettingsView: View {
+    @Binding var apiKey: String
+    @Binding var model: String
+    @Binding var availableModels: [String]
+    @Binding var isLoadingModels: Bool
+    @Binding var isTesting: Bool
+    @Binding var feedback: String?
+    let onTest: () -> Void
+
+    var body: some View {
+        Form {
+            Section("API key") {
+                SecureField("OpenAI API key", text: $apiKey)
+                    .textContentType(.password)
+                Text("Stored securely in Keychain")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Section("Model") {
+                if availableModels.isEmpty {
+                    Text(model)
+                        .font(.caption)
+                    if isLoadingModels {
+                        ProgressView("Loading…")
+                    } else {
+                        Text("Test the API to load the newest models.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                } else {
+                    Picker("Chat model", selection: $model) {
+                        ForEach(availableModels, id: \.self) { availableModel in
+                            Text(availableModel).tag(availableModel)
+                        }
+                    }
+                    Text("Newest 5 text models for this key")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Section {
+                Button(action: onTest) {
+                    Label(isTesting ? "Testing…" : "Test API", systemImage: "checkmark.circle")
+                }
+                .disabled(isTesting)
+
+                if let feedback {
+                    Text(feedback)
+                        .font(.caption2)
+                        .foregroundColor(feedback.hasPrefix("Chat API connected") ? .green : .red)
+                        .lineLimit(3)
+                }
+            }
+        }
+        .navigationTitle("Chat API")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

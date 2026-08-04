@@ -68,15 +68,19 @@ public class SSHCommand: SSHChannel {
     private var error: Data?
 
     public func execute(_ command: String, completion: ((String, Data?, Error?) -> Void)?) {
-        session.queue.async(completion: { (error: Error?) in
+        session.queue.async(completion: { [weak self] (error: Error?) in
             if let error = error {
-                self.close()
+                self?.close()
 
                 if let completion = completion {
                     completion(command, nil, error)
                 }
             }
-        }, block: {
+        }, block: { [weak self] in
+            guard let self = self else {
+                return
+            }
+
             self.response = nil
             self.error = nil
 

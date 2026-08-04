@@ -62,7 +62,7 @@ public struct ThreadDetailView: View {
                             Text(viewModel.thread.status.label)
                                 .font(.system(size: 10, weight: .semibold, design: .rounded))
                             if let goal = viewModel.goal {
-                                Text("· (goal.status.label)")
+                                Text("· \(goal.status.label)")
                                     .font(.system(size: 9, design: .rounded))
                                     .foregroundColor(.secondary)
                             }

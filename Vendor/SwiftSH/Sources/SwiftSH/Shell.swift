@@ -93,9 +93,13 @@ public class SSHShell: SSHChannel {
     }
 
     public func open(_ completion: SSHCompletionBlock?) {
-        session.queue.async(completion: completion) {
+        session.queue.async(completion: completion) { [weak self] in
+            guard let self = self else {
+                return
+            }
+
             // Open the channel
-            try super.open()
+            try self.openChannel()
             
             self.session.log.debug("Opening the shell...")
 
@@ -240,6 +244,10 @@ public class SSHShell: SSHChannel {
             
             self.session.log.debug("Shell opened successfully")
         }
+    }
+
+    private func openChannel() throws {
+        try super.open()
     }
 
     public func close(_ completion: (() -> Void)?) {

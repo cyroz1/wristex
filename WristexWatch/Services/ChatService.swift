@@ -74,10 +74,12 @@ public final class ChatService: ObservableObject {
 
     @Published public private(set) var apiKey: String
     @Published public private(set) var model: String
+    @Published public private(set) var availableModels: [String] = []
 
     private let defaults = UserDefaults.standard
     private let modelKey = "wristex.chat.model"
     private let apiKeyAccount = "openai-api-key"
+    private static let debugAPIKeyEnvironment = "WRISTEX_OPENAI_API_KEY"
     private let endpoint = URL(string: "https://api.openai.com/v1/responses")!
     private let transcriptionEndpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
     private let modelsEndpoint = URL(string: "https://api.openai.com/v1/models")!
@@ -89,8 +91,20 @@ public final class ChatService: ObservableObject {
     private var voiceChannels = 1
 
     private init() {
-        apiKey = KeychainStore.read(apiKeyAccount)
+        #if DEBUG
+        let injectedAPIKey = ProcessInfo.processInfo.environment[Self.debugAPIKeyEnvironment]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        #else
+        let injectedAPIKey: String? = nil
+        #endif
+
+        apiKey = injectedAPIKey ?? KeychainStore.read(apiKeyAccount)
         model = defaults.string(forKey: modelKey) ?? "gpt-4o-mini"
+
+        if let injectedAPIKey {
+            KeychainStore.write(injectedAPIKey, account: apiKeyAccount)
+        }
     }
 
     public var isConfigured: Bool {
@@ -100,6 +114,9 @@ public final class ChatService: ObservableObject {
     public func configure(apiKey: String, model: String) {
         let cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanKey != self.apiKey {
+            availableModels = []
+        }
         self.apiKey = cleanKey
         self.model = cleanModel.isEmpty ? "gpt-4o-mini" : cleanModel
         KeychainStore.write(cleanKey, account: apiKeyAccount)
@@ -161,20 +178,41 @@ public final class ChatService: ObservableObject {
         voiceData.removeAll(keepingCapacity: false)
     }
 
-    public func testConnection() async throws {
+    public func refreshAvailableModels() async throws -> [String] {
         guard isConfigured else { throw ChatAPIError.notConfigured }
 
         var request = URLRequest(url: modelsEndpoint)
         request.httpMethod = "GET"
         addHeaders(to: &request)
 
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ChatAPIError.invalidResponse
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw ChatAPIError.httpStatus(httpResponse.statusCode)
         }
+
+        let payload = try JSONDecoder().decode(ModelListResponse.self, from: data)
+        let models = payload.data
+            .filter { Self.isTextChatModel($0.id) }
+            .sorted {
+                if $0.created != $1.created { return $0.created > $1.created }
+                return $0.id.localizedStandardCompare($1.id) == .orderedAscending
+            }
+            .prefix(5)
+            .map(\.id)
+
+        guard !models.isEmpty else {
+            throw ChatAPIError.apiMessage("No text chat models are available for this API key.")
+        }
+
+        availableModels = models
+        return models
+    }
+
+    public func testConnection() async throws {
+        _ = try await refreshAvailableModels()
     }
 
     public func send(
@@ -315,5 +353,31 @@ public final class ChatService: ObservableObject {
     private func addHeaders(to request: inout URLRequest) {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    }
+
+    private static func isTextChatModel(_ id: String) -> Bool {
+        let normalizedID = id.lowercased()
+        let nonChatMarkers = [
+            "embedding",
+            "moderation",
+            "whisper",
+            "transcribe",
+            "tts",
+            "dall-e",
+            "image",
+            "sora",
+            "realtime",
+            "audio"
+        ]
+        return !nonChatMarkers.contains { normalizedID.contains($0) }
+    }
+
+    private struct ModelListResponse: Decodable {
+        let data: [APIModel]
+    }
+
+    private struct APIModel: Decodable {
+        let id: String
+        let created: Int
     }
 }

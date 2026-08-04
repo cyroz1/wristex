@@ -28,12 +28,15 @@ import Foundation
 internal extension CFSocket {
 
     func setSocketOption<T: BinaryInteger>(_ value: T, level: Int32, name: Int32) -> Bool {
-        var value = value
-        if setsockopt(CFSocketGetNative(self), level, name, &value, socklen_t(MemoryLayout.size(ofValue: value))) == -1 {
-            return false
+        withUnsafeBytes(of: value) { valueBuffer in
+            setsockopt(
+                CFSocketGetNative(self),
+                level,
+                name,
+                valueBuffer.baseAddress,
+                socklen_t(valueBuffer.count)
+            ) != -1
         }
-
-        return true
     }
 
 }

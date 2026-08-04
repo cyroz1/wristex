@@ -28,6 +28,9 @@ let package = Package(
             dependencies: [
                 .product(name: "CSSH", package: "Libssh2Prebuild"),
                 "CSwiftSH"
+            ],
+            swiftSettings: [
+                .enableExperimentalFeature("CheckImplementationOnly")
             ]
         )
     ]

@@ -76,7 +76,7 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A00000000000000000000005 /* Wristex */ = {isa = PBXNativeTarget; buildConfigurationList = A0000000000000000000000A; buildPhases = (A00000000000000000000007 /* Sources */, A00000000000000000000004 /* Frameworks */, A00000000000000000000008 /* Resources */,); buildRules = (); dependencies = (); name = Wristex; packageProductDependencies = (P00000000000000000000001 /* SwiftSH */,); productName = Wristex; productReference = F00000000000000000000017 /* Wristex.app */; productType = "com.apple.product-type.application"; };
+		A00000000000000000000005 /* Wristex */ = {isa = PBXNativeTarget; buildConfigurationList = A0000000000000000000000A; buildPhases = (A00000000000000000000007 /* Sources */, A00000000000000000000004 /* Frameworks */, A00000000000000000000008 /* Resources */, A0000000000000000000000B /* Resolve local SSH config */,); buildRules = (); dependencies = (); name = Wristex; packageProductDependencies = (P00000000000000000000001 /* SwiftSH */,); productName = Wristex; productReference = F00000000000000000000017 /* Wristex.app */; productType = "com.apple.product-type.application"; };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -86,6 +86,19 @@
 /* Begin PBXResourcesBuildPhase section */
 		A00000000000000000000008 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (B0000000000000000000001B /* Assets.xcassets in Resources */,); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A0000000000000000000000B /* Resolve local SSH config */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			name = "Resolve local SSH config";
+			outputPaths = ("$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WristexSSHConfig.plist",);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nconfig=\"$SRCROOT/config/ssh-test.conf\"\noutput=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/WristexSSHConfig.plist\"\nrm -f \"$output\"\nif [ ! -f \"$config\" ]; then exit 0; fi\nhost_alias=\"$(awk 'BEGIN { IGNORECASE = 1 } /^[[:space:]]*Host[[:space:]]+/ { for (i = 2; i <= NF; i++) if ($i !~ /[*?!]/) { print $i; exit } }' \"$HOME/.ssh/config\" \"$config\" 2>/dev/null || true)\"\nif [ -z \"$host_alias\" ]; then exit 0; fi\nresolved=\"$(ssh -G -F \"$config\" \"$host_alias\" 2>/dev/null || true)\"\nhost=\"$(printf '%s\\n' \"$resolved\" | awk '$1 == \"hostname\" { print $2; exit }')\"\nusername=\"$(printf '%s\\n' \"$resolved\" | awk '$1 == \"user\" { print $2; exit }')\"\nport=\"$(printf '%s\\n' \"$resolved\" | awk '$1 == \"port\" { print $2; exit }')\"\nif [ -z \"$host\" ] || [ -z \"$username\" ] || [ -z \"$port\" ]; then exit 0; fi\nmkdir -p \"$(dirname \"$output\")\"\nplutil -create xml1 \"$output\"\nplutil -insert host -string \"$host\" \"$output\"\nplutil -insert username -string \"$username\" \"$output\"\nplutil -insert port -integer \"$port\" \"$output\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A00000000000000000000007 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000001, B00000000000000000000002, B00000000000000000000003, B00000000000000000000004, B00000000000000000000005, B00000000000000000000006, B00000000000000000000007, B00000000000000000000008, B00000000000000000000009, B0000000000000000000000A, B0000000000000000000000B, B0000000000000000000000C, B0000000000000000000000D, B0000000000000000000000E, B0000000000000000000000F, B00000000000000000000010, B00000000000000000000011, B00000000000000000000012, B00000000000000000000013, B00000000000000000000014, B00000000000000000000015, B00000000000000000000016, B00000000000000000000018, B00000000000000000000019, B0000000000000000000001A,); runOnlyForDeploymentPostprocessing = 0; };

@@ -42,6 +42,10 @@ public final class SSHManager: ObservableObject {
         static let fingerprintPrefix = "wristex_ssh_fingerprint_"
     }
 
+    private static let debugPrivateKeyEnvironment = "WRISTEX_SSH_PRIVATE_KEY"
+    private static let debugPrivateKeyPassphraseEnvironment = "WRISTEX_SSH_PRIVATE_KEY_PASSPHRASE"
+    private static let debugWorkspaceEnvironment = "WRISTEX_SSH_WORKSPACE"
+
     private init() {
         host = defaults.string(forKey: Keys.host) ?? ""
         username = defaults.string(forKey: Keys.username) ?? ""
@@ -49,8 +53,33 @@ public final class SSHManager: ObservableObject {
         port = savedPort == 0 ? 22 : savedPort
         remoteWorkspacePath = defaults.string(forKey: Keys.workspace) ?? ""
         password = KeychainStore.read(Keys.password)
-        privateKeyPEM = KeychainStore.read(Keys.privateKeyPEM)
-        privateKeyPassphrase = KeychainStore.read(Keys.privateKeyPassphrase)
+        #if DEBUG
+        let injectedPrivateKey = ProcessInfo.processInfo.environment[Self.debugPrivateKeyEnvironment]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        #else
+        let injectedPrivateKey: String? = nil
+        #endif
+
+        privateKeyPEM = injectedPrivateKey ?? KeychainStore.read(Keys.privateKeyPEM)
+        #if DEBUG
+        let injectedPrivateKeyPassphrase = ProcessInfo.processInfo.environment[Self.debugPrivateKeyPassphraseEnvironment]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        #else
+        let injectedPrivateKeyPassphrase: String? = nil
+        #endif
+
+        privateKeyPassphrase = injectedPrivateKeyPassphrase ?? KeychainStore.read(Keys.privateKeyPassphrase)
+
+        applySSHConfigDefaults()
+        applyDebugEnvironmentOverrides()
+
+        if let injectedPrivateKey {
+            KeychainStore.write(injectedPrivateKey, account: Keys.privateKeyPEM)
+        }
+        if let injectedPrivateKeyPassphrase {
+            KeychainStore.write(injectedPrivateKeyPassphrase, account: Keys.privateKeyPassphrase)
+        }
 
         // Remove credentials left by early development builds.
         defaults.removeObject(forKey: Keys.password)
@@ -65,6 +94,10 @@ public final class SSHManager: ObservableObject {
         !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         (!password.isEmpty || !privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
         (1...65_535).contains(port)
+    }
+
+    public func reloadConfigDefaults() {
+        applySSHConfigDefaults()
     }
 
     public var hasPinnedFingerprint: Bool {
@@ -183,6 +216,37 @@ public final class SSHManager: ObservableObject {
         )
     }
 
+    private func applySSHConfigDefaults() {
+        guard let config = SSHConfigLoader.load() else {
+            return
+        }
+
+        if host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            host = config.host
+        }
+        if username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            username = config.username
+        }
+        if defaults.object(forKey: Keys.port) == nil {
+            port = config.port
+        }
+        if privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let privateKeyPEM = config.privateKeyPEM {
+            self.privateKeyPEM = privateKeyPEM
+            KeychainStore.write(privateKeyPEM, account: Keys.privateKeyPEM)
+        }
+    }
+
+    private func applyDebugEnvironmentOverrides() {
+        #if DEBUG
+        if let workspace = ProcessInfo.processInfo.environment[Self.debugWorkspaceEnvironment]
+            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }),
+           !workspace.isEmpty {
+            remoteWorkspacePath = workspace
+        }
+        #endif
+    }
+
     private func connect(_ session: SSHSession) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             session.connect { error in
@@ -283,5 +347,277 @@ struct RemoteCommandError: LocalizedError {
 
     var errorDescription: String? {
         output.isEmpty ? "Remote command failed (exit \(status))." : output
+    }
+}
+
+private struct SSHConfigSettings {
+    let host: String
+    let username: String
+    let port: Int
+    let privateKeyPEM: String?
+}
+
+private enum SSHConfigLoader {
+    private struct HostBlock {
+        let patterns: [String]
+        var values: [String: String]
+    }
+
+    static func load() -> SSHConfigSettings? {
+        for url in candidateURLs() {
+            let blocks = parseFile(url, visited: [])
+            guard let block = blocks.first(where: { block in
+                block.patterns.contains { pattern in
+                    !pattern.isEmpty && !pattern.contains("*") && !pattern.contains("?") && !pattern.hasPrefix("!")
+                }
+            }),
+            let hostPattern = block.patterns.first(where: { pattern in
+                !pattern.isEmpty && !pattern.contains("*") && !pattern.contains("?") && !pattern.hasPrefix("!")
+            }) else {
+                continue
+            }
+
+            let host = block.values["hostname"] ?? hostPattern
+            let username = block.values["user"] ?? ""
+            let port = Int(block.values["port"] ?? "22") ?? 22
+            let privateKeyPEM = block.values["identityfile"].flatMap { identityPath in
+                readPrivateKey(identityPath, relativeTo: url)
+            }
+
+            guard !host.isEmpty, !username.isEmpty, (1...65_535).contains(port) else {
+                continue
+            }
+            return SSHConfigSettings(
+                host: host,
+                username: username,
+                port: port,
+                privateKeyPEM: privateKeyPEM
+            )
+        }
+
+        if let bundledSettings = loadBundledDefaults() {
+            return bundledSettings
+        }
+        return nil
+    }
+
+    private static func loadBundledDefaults() -> SSHConfigSettings? {
+        guard let url = Bundle.main.url(forResource: "WristexSSHConfig", withExtension: "plist"),
+              let data = try? Data(contentsOf: url),
+              let propertyList = try? PropertyListSerialization.propertyList(
+                  from: data,
+                  options: [],
+                  format: nil
+              ),
+              let values = propertyList as? [String: Any],
+              let host = values["host"] as? String,
+              let username = values["username"] as? String,
+              let port = values["port"] as? Int,
+              !host.isEmpty,
+              !username.isEmpty,
+              (1...65_535).contains(port) else {
+            return nil
+        }
+
+        return SSHConfigSettings(
+            host: host,
+            username: username,
+            port: port,
+            privateKeyPEM: nil
+        )
+    }
+
+    private static func candidateURLs() -> [URL] {
+        var urls: [URL] = []
+        let fileManager = FileManager.default
+
+        if let configuredPath = ProcessInfo.processInfo.environment["WRISTEX_SSH_CONFIG"],
+           !configuredPath.isEmpty {
+            urls.append(URL(fileURLWithPath: expandTilde(in: configuredPath)))
+        }
+
+        urls.append(
+            URL(fileURLWithPath: fileManager.currentDirectoryPath)
+                .appendingPathComponent("config/ssh-test.conf")
+        )
+
+        #if DEBUG
+        // Xcode's debug app can read the project-local config when it exists.
+        let sourceDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let projectRoot = sourceDirectory
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        urls.append(projectRoot.appendingPathComponent("config/ssh-test.conf"))
+        #endif
+
+        if let bundleURL = Bundle.main.url(forResource: "ssh-test", withExtension: "conf", subdirectory: "config") {
+            urls.append(bundleURL)
+        }
+        if let bundleURL = Bundle.main.url(forResource: "ssh-test", withExtension: "conf") {
+            urls.append(bundleURL)
+        }
+
+        var uniqueURLs: [URL] = []
+        var seen = Set<String>()
+        for url in urls {
+            let key = url.standardizedFileURL.path
+            if seen.insert(key).inserted {
+                uniqueURLs.append(url)
+            }
+        }
+        return uniqueURLs
+    }
+
+    private static func parseFile(_ url: URL, visited: Set<String>) -> [HostBlock] {
+        let canonicalURL = url.standardizedFileURL
+        guard !visited.contains(canonicalURL.path),
+              let contents = try? String(contentsOf: canonicalURL, encoding: .utf8) else {
+            return []
+        }
+
+        var visited = visited
+        visited.insert(canonicalURL.path)
+        var globalValues: [String: String] = [:]
+        var blocks: [HostBlock] = []
+        var currentBlock: HostBlock?
+
+        func appendCurrentBlock() {
+            guard var currentBlock else { return }
+            for (key, value) in globalValues where currentBlock.values[key] == nil {
+                currentBlock.values[key] = value
+            }
+            blocks.append(currentBlock)
+        }
+
+        for rawLine in contents.components(separatedBy: .newlines) {
+            let line = removeComment(from: rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let parts = tokens(in: line)
+            guard let directive = parts.first?.lowercased(), parts.count > 1 else { continue }
+            let values = Array(parts.dropFirst())
+
+            if directive == "host" {
+                appendCurrentBlock()
+                currentBlock = HostBlock(patterns: values, values: [:])
+            } else if directive == "include" {
+                let includedBlocks = values.flatMap { includePath in
+                    includeURLs(for: includePath, relativeTo: canonicalURL)
+                        .flatMap { parseFile($0, visited: visited) }
+                }
+                blocks.append(contentsOf: includedBlocks)
+            } else if let value = values.first {
+                if currentBlock != nil {
+                    currentBlock?.values[directive] = value
+                } else {
+                    globalValues[directive] = value
+                }
+            }
+        }
+
+        appendCurrentBlock()
+        return blocks
+    }
+
+    private static func includeURLs(for path: String, relativeTo configURL: URL) -> [URL] {
+        let expandedPath = expandTilde(in: path)
+        let url: URL
+        if expandedPath.hasPrefix("/") {
+            url = URL(fileURLWithPath: expandedPath)
+        } else {
+            url = configURL.deletingLastPathComponent().appendingPathComponent(expandedPath)
+        }
+
+        if !expandedPath.contains("*") && !expandedPath.contains("?") {
+            return [url]
+        }
+
+        let directory = url.deletingLastPathComponent()
+        let pattern = url.lastPathComponent
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return files.filter { wildcardMatch(pattern, value: $0.lastPathComponent) }
+    }
+
+    private static func readPrivateKey(_ path: String, relativeTo configURL: URL) -> String? {
+        let expandedPath = expandTilde(in: path)
+        let url: URL
+        if expandedPath.hasPrefix("/") {
+            url = URL(fileURLWithPath: expandedPath)
+        } else {
+            url = configURL.deletingLastPathComponent().appendingPathComponent(expandedPath)
+        }
+        guard let privateKey = try? String(contentsOf: url, encoding: .utf8) else {
+            return nil
+        }
+        let trimmedKey = privateKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedKey.isEmpty ? nil : trimmedKey
+    }
+
+    private static func expandTilde(in path: String) -> String {
+        guard path == "~" || path.hasPrefix("~/") else {
+            return path
+        }
+        let homeDirectory = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+        return homeDirectory + String(path.dropFirst())
+    }
+
+    private static func removeComment(from line: String) -> String {
+        var quote: Character?
+        for (index, character) in line.enumerated() {
+            if character == "\"" || character == "'" {
+                if quote == nil {
+                    quote = character
+                } else if quote == character {
+                    quote = nil
+                }
+            } else if character == "#" && quote == nil {
+                return String(line.prefix(index))
+            }
+        }
+        return line
+    }
+
+    private static func tokens(in line: String) -> [String] {
+        var result: [String] = []
+        var token = ""
+        var quote: Character?
+        var escaped = false
+
+        for character in line {
+            if escaped {
+                token.append(character)
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else if character == "\"" || character == "'" {
+                if quote == nil {
+                    quote = character
+                } else if quote == character {
+                    quote = nil
+                } else {
+                    token.append(character)
+                }
+            } else if character.isWhitespace && quote == nil {
+                if !token.isEmpty {
+                    result.append(token)
+                    token = ""
+                }
+            } else {
+                token.append(character)
+            }
+        }
+        if escaped { token.append("\\") }
+        if !token.isEmpty { result.append(token) }
+        return result
+    }
+
+    private static func wildcardMatch(_ pattern: String, value: String) -> Bool {
+        let escapedPattern = NSRegularExpression.escapedPattern(for: pattern)
+            .replacingOccurrences(of: "\\*", with: ".*")
+            .replacingOccurrences(of: "\\?", with: ".")
+        return value.range(of: "^\(escapedPattern)$", options: .regularExpression) != nil
     }
 }

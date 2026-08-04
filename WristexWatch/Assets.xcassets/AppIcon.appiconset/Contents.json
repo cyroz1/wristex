@@ -2,9 +2,8 @@
   "images" : [
     {
       "filename" : "WristexIcon.png",
-      "idiom" : "watch",
+      "idiom" : "universal",
       "platform" : "watchos",
-      "scale" : "1x",
       "size" : "1024x1024"
     }
   ],
