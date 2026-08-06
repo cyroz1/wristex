@@ -6,63 +6,84 @@ public struct ApprovalListView: View {
     public init() {}
     
     public var body: some View {
-        List {
-            if viewModel.isLoading && viewModel.approvals.isEmpty {
-                VStack {
-                    ProgressView()
-                        .padding()
-                    Text("Fetching approvals...")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            CompactWatchHeader("Approvals") {
+                if !viewModel.approvals.isEmpty {
+                    Text("\(viewModel.approvals.count)")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .foregroundColor(.orange)
                 }
-                .frame(maxWidth: .infinity)
-                .listRowBackground(Color.clear)
-            } else if viewModel.approvals.isEmpty {
-                VStack(spacing: 12) {
-                    Spacer()
-                    Image(systemName: "checkmark.shield.fill")
-                        .font(.title2)
-                        .foregroundColor(.emerald) // Custom color token
-                    Text("All Actions Approved")
-                        .font(.system(.body, design: .rounded))
-                        .fontWeight(.semibold)
-                    Text("Agent has no pending tool prompts.")
-                        .font(.system(size: 10, weight: .light, design: .rounded))
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                    Spacer()
+                Button {
+                    Task { await viewModel.loadApprovals() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 25, height: 24)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 20)
-                .listRowBackground(Color.clear)
-            } else {
-                Section(header: Text("Awaiting Permission").font(.system(.footnote, design: .rounded)).foregroundColor(.orange)) {
-                    ForEach(viewModel.approvals) { request in
-                        NavigationLink(destination: ApprovalDetailView(request: request)) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Image(systemName: toolIcon(request.toolName))
-                                        .foregroundColor(toolColor(request.toolName))
-                                    Text(request.toolName)
-                                        .font(.system(.body, design: .rounded))
-                                        .fontWeight(.semibold)
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                .background(Color.white.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            List {
+                if viewModel.isLoading && viewModel.approvals.isEmpty {
+                    VStack(spacing: 2) {
+                        ProgressView()
+                        Text("Fetching approvals…")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .listRowBackground(Color.clear)
+                } else if viewModel.approvals.isEmpty {
+                    VStack(spacing: 4) {
+                        Image(systemName: "checkmark.shield.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(.emerald)
+                        Text("All clear")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        Text("No pending tool prompts.")
+                            .font(.system(size: 8, design: .rounded))
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .listRowBackground(Color.clear)
+                } else {
+                    Section {
+                        ForEach(viewModel.approvals) { request in
+                            NavigationLink(destination: ApprovalDetailView(request: request)) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: toolIcon(request.toolName))
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundColor(toolColor(request.toolName))
+                                        Text(request.toolName)
+                                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                            .lineLimit(1)
+                                    }
+
+                                    Text(request.details)
+                                        .font(.system(size: 8, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
                                 }
-                                
-                                Text(request.details)
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(2)
+                                .padding(.vertical, 1)
                             }
-                            .padding(.vertical, 4)
+                            .listRowInsets(EdgeInsets(top: 1, leading: 2, bottom: 1, trailing: 2))
                         }
+                    } header: {
+                        Text("Awaiting permission")
+                            .font(.system(size: 8, weight: .semibold, design: .rounded))
+                            .foregroundColor(.orange)
                     }
                 }
             }
+            .refreshable { await viewModel.loadApprovals() }
         }
-        .navigationTitle("Approvals")
-        .refreshable {
-            await viewModel.loadApprovals()
-        }
+        .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             viewModel.startPolling()
         }

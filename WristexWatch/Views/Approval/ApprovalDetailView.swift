@@ -11,83 +11,92 @@ public struct ApprovalDetailView: View {
     }
     
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                // Header Details
-                HStack {
-                    Label(request.toolName, systemImage: toolIcon(request.toolName))
-                        .font(.system(.body, design: .rounded))
-                        .fontWeight(.bold)
-                        .foregroundColor(toolColor(request.toolName))
-                    
-                    Spacer()
-                    
-                    Text(formattedTime(request.timestamp))
-                        .font(.system(size: 8))
-                        .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            CompactWatchHeader("Approval") {
+                Text(request.toolName)
+                    .font(.system(size: 7, weight: .semibold, design: .rounded))
+                    .foregroundColor(toolColor(request.toolName))
+                    .lineLimit(1)
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 25, height: 24)
                 }
-                
-                // Inspect Card / Console view
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Action Description:")
-                        .font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .foregroundColor(.secondary)
-                    
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(request.details)
-                            .font(.system(.footnote, design: .monospaced))
-                            .foregroundColor(request.toolName == "run_command" ? .green : .white)
-                            .padding(8)
-                            .background(Color.black.opacity(0.6))
-                            .cornerRadius(6)
-                    }
-                }
-                .padding(6)
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
                 .background(Color.white.opacity(0.08))
-                .cornerRadius(8)
-                
-                // Approve / Deny Buttons
-                HStack(spacing: 8) {
-                    Button(action: {
-                        Task {
-                            await viewModel.respond(id: request.id, approve: false)
-                            dismiss()
-                        }
-                    }) {
-                        HStack {
-                            Image(systemName: "xmark.circle.fill")
-                            Text("Deny")
-                        }
-                        .font(.system(.body, design: .rounded))
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    
-                    Button(action: {
-                        Task {
-                            await viewModel.respond(id: request.id, approve: true)
-                            dismiss()
-                        }
-                    }) {
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill")
-                            Text("Approve")
-                        }
-                        .font(.system(.body, design: .rounded))
-                        .fontWeight(.semibold)
-                        .foregroundColor(.white)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.emerald)
-                }
-                .padding(.top, 4)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
-            .padding(.horizontal, 4)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 4) {
+                        Image(systemName: toolIcon(request.toolName))
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(toolColor(request.toolName))
+                        Text(formattedTime(request.timestamp))
+                            .font(.system(size: 8, design: .rounded))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Action")
+                            .font(.system(size: 8, weight: .semibold, design: .rounded))
+                            .foregroundColor(.secondary)
+
+                        Text(request.details)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(request.toolName == "run_command" ? .green : .white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(4)
+                            .background(Color.black.opacity(0.6))
+                            .cornerRadius(5)
+                    }
+                    .padding(4)
+                    .background(Color.white.opacity(0.08))
+                    .cornerRadius(6)
+
+                    HStack(spacing: 4) {
+                        Button {
+                            Task {
+                                await viewModel.respond(id: request.id, approve: false)
+                                dismiss()
+                            }
+                        } label: {
+                            Label("Deny", systemImage: "xmark")
+                                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                .frame(maxWidth: .infinity, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.white)
+                        .background(Color.red.opacity(0.85))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                        Button {
+                            Task {
+                                await viewModel.respond(id: request.id, approve: true)
+                                dismiss()
+                            }
+                        } label: {
+                            Label("Approve", systemImage: "checkmark")
+                                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                .frame(maxWidth: .infinity, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.white)
+                        .background(Color.emerald.opacity(0.85))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                .padding(.horizontal, 3)
+                .padding(.vertical, 3)
+            }
         }
-        .navigationTitle("Inspect Request")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
     }
     
     private func toolIcon(_ name: String) -> String {

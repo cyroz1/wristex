@@ -10,61 +10,32 @@ public final class GitViewModel: ObservableObject {
     @Published public var actionFeedbackMessage: String? = nil
     
     private let ssh = SSHManager.shared
+    private let workspaceOverride: String?
     
-    public init() {}
+    public init(workspacePath: String? = nil) {
+        workspaceOverride = workspacePath
+    }
+
+    private var workspacePath: String {
+        (workspaceOverride ?? ssh.remoteWorkspacePath)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     
     public func loadGitStatus() async {
         isLoading = true
         errorMessage = nil
+        gitStatus = nil
         do {
-            let cmd = """
-            cd \(Shell.quote(ssh.remoteWorkspacePath)) && python3 -c "
-            import subprocess, json
-            try:
-                branch = subprocess.check_output(['git', 'branch', '--show-current']).decode('utf-8').strip()
-                
-                # Check ahead/behind count
-                try:
-                    ab_out = subprocess.check_output(['git', 'rev-list', '--left-right', '--count', 'HEAD...@{u}'], stderr=subprocess.DEVNULL).decode('utf-8').strip()
-                    ahead, behind = map(int, ab_out.split())
-                except:
-                    ahead, behind = 0, 0
-                
-                # Get modified and untracked files
-                status_out = subprocess.check_output(['git', 'status', '--porcelain']).decode('utf-8').splitlines()
-                modified = []
-                untracked = []
-                for line in status_out:
-                    if line.startswith('??'):
-                        untracked.append(line[3:])
-                    else:
-                        modified.append(line[3:])
-                print(json.dumps({
-                    'branch': branch,
-                    'modifiedFiles': modified,
-                    'untrackedFiles': untracked,
-                    'ahead': ahead,
-                    'behind': behind
-                }))
-            except Exception as e:
-                print(json.dumps({
-                    'branch': 'error',
-                    'modifiedFiles': [],
-                    'untrackedFiles': [],
-                    'ahead': 0,
-                    'behind': 0,
-                    'error': str(e)
-                }))
-            "
-            """
-            let stdout = try await ssh.executeCommand(cmd)
-            guard let data = stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8) else {
-                throw URLError(.cannotDecodeContentData)
+            let workspace = workspacePath
+            guard !workspace.isEmpty else {
+                throw GitViewModelError.missingWorkspace
             }
-            let decoder = JSONDecoder()
-            self.gitStatus = try decoder.decode(GitStatus.self, from: data)
+
+            let cmd = "cd \(Shell.quote(workspace)) && git status --porcelain=v1 --branch"
+            let stdout = try await ssh.executeCommand(cmd)
+            self.gitStatus = try parseGitStatus(stdout)
         } catch {
-            self.errorMessage = "SSH status failed: \(error.localizedDescription)"
+            self.errorMessage = error.localizedDescription
         }
         isLoading = false
     }
@@ -90,14 +61,21 @@ public final class GitViewModel: ObservableObject {
         
         do {
             let cmd: String
+            let workspace = workspacePath
+            guard !workspace.isEmpty else {
+                errorMessage = GitViewModelError.missingWorkspace.localizedDescription
+                isExecutingAction = false
+                return
+            }
+
             switch action {
             case .pull:
-                cmd = "cd \(Shell.quote(ssh.remoteWorkspacePath)) && git pull"
+                cmd = "cd \(Shell.quote(workspace)) && git pull"
             case .push:
-                cmd = "cd \(Shell.quote(ssh.remoteWorkspacePath)) && git push"
+                cmd = "cd \(Shell.quote(workspace)) && git push"
             case .commit:
                 let message = commitMessage ?? "Automated commit from Wristex"
-                cmd = "cd \(Shell.quote(ssh.remoteWorkspacePath)) && git add . && git commit -m \(Shell.quote(message))"
+                cmd = "cd \(Shell.quote(workspace)) && git add . && git commit -m \(Shell.quote(message))"
             }
             
             let stdout = try await ssh.executeCommand(cmd)
@@ -111,5 +89,68 @@ public final class GitViewModel: ObservableObject {
             HapticManager.shared.playFailure()
         }
         isExecutingAction = false
+    }
+
+    private func parseGitStatus(_ output: String) throws -> GitStatus {
+        let lines = output.split(whereSeparator: \.isNewline).map(String.init)
+        guard let header = lines.first(where: { $0.hasPrefix("## ") }) else {
+            throw GitViewModelError.invalidStatusOutput
+        }
+
+        var branch = String(header.dropFirst(3))
+        if let trackingRange = branch.range(of: "...") {
+            branch = String(branch[..<trackingRange.lowerBound])
+        }
+        if branch.isEmpty || branch.hasPrefix("HEAD") {
+            branch = "(detached)"
+        }
+
+        var ahead = 0
+        var behind = 0
+        if let metadataStart = header.firstIndex(of: "[") {
+            let metadata = String(header[metadataStart...])
+                .replacingOccurrences(of: "[", with: "")
+                .replacingOccurrences(of: "]", with: "")
+            for value in metadata.split(separator: ",") {
+                let parts = value.split(separator: " ")
+                guard parts.count == 2, let count = Int(parts[1]) else { continue }
+                if parts[0] == "ahead" { ahead = count }
+                if parts[0] == "behind" { behind = count }
+            }
+        }
+
+        var modifiedFiles: [String] = []
+        var untrackedFiles: [String] = []
+        for line in lines.dropFirst() where line.count >= 3 {
+            let status = String(line.prefix(2))
+            let path = String(line.dropFirst(3))
+            if status == "??" {
+                untrackedFiles.append(path)
+            } else {
+                modifiedFiles.append(path)
+            }
+        }
+
+        return GitStatus(
+            branch: branch,
+            modifiedFiles: modifiedFiles,
+            untrackedFiles: untrackedFiles,
+            ahead: ahead,
+            behind: behind
+        )
+    }
+}
+
+private enum GitViewModelError: LocalizedError {
+    case missingWorkspace
+    case invalidStatusOutput
+
+    var errorDescription: String? {
+        switch self {
+        case .missingWorkspace:
+            return "Set the remote workspace in Settings."
+        case .invalidStatusOutput:
+            return "Git returned an unreadable status."
+        }
     }
 }

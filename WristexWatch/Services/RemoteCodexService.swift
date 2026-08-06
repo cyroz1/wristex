@@ -492,24 +492,34 @@ final class RemoteCodexService {
             "limit": 100,
             "sortKey": "recency_at",
             "sortDirection": "desc",
-            "sourceKinds": []
+            "sourceKinds": ["cli", "vscode", "exec", "appServer"]
         ]
-        if !ssh.remoteWorkspacePath.isEmpty {
-            params["cwd"] = ssh.remoteWorkspacePath
+
+        var threads: [AgentThread] = []
+        var seenIDs = Set<String>()
+        while true {
+            let response = try await client.request("thread/list", params: params)
+            let data = response["data"] as? [[String: Any]] ?? []
+            for value in data {
+                guard let thread = makeThread(value), seenIDs.insert(thread.id).inserted else { continue }
+                threads.append(thread)
+            }
+
+            guard let cursor = response["nextCursor"] as? String, !cursor.isEmpty else { break }
+            params["cursor"] = cursor
         }
-        let response = try await client.request("thread/list", params: params)
-        let data = response["data"] as? [[String: Any]] ?? []
-        return data.compactMap(makeThread)
+        return threads
     }
 
-    func createThread(title: String) async throws -> AgentThread {
+    func createThread(title: String, cwd: String? = nil) async throws -> AgentThread {
         var params: [String: Any] = [
             "sandbox": "workspace-write",
             "approvalPolicy": "on-request",
             "historyMode": "paginated"
         ]
-        if !ssh.remoteWorkspacePath.isEmpty {
-            params["cwd"] = ssh.remoteWorkspacePath
+        let cleanCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !cleanCWD.isEmpty {
+            params["cwd"] = cleanCWD
         }
         let response = try await client.request("thread/start", params: params)
         guard let thread = response["thread"] as? [String: Any],
@@ -525,42 +535,100 @@ final class RemoteCodexService {
         }
         var named = result
         named.title = title.isEmpty ? result.title : title
+        named.settings = ThreadSettings(
+            approvalPolicy: .onRequest,
+            sandboxPolicy: .workspaceWrite
+        )
+        if let model = response["model"] as? String, !model.isEmpty {
+            named.activeModel = model
+        }
+        if named.cwd == nil, !cleanCWD.isEmpty {
+            named.cwd = cleanCWD
+        }
         return named
     }
 
     func readMessages(threadID: String) async throws -> [ThreadMessage] {
-        let response = try await client.request("thread/items/list", params: [
+        do {
+            return try await readPaginatedMessages(threadID: threadID)
+        } catch let error as CodexAppServerError {
+            guard case .server(let message) = error,
+                  message.localizedCaseInsensitiveContains("thread/items/list is not supported") else {
+                throw error
+            }
+            return try await readLegacyMessages(threadID: threadID)
+        }
+    }
+
+    private func readPaginatedMessages(threadID: String) async throws -> [ThreadMessage] {
+        var params: [String: Any] = [
             "threadId": threadID,
             "limit": 200,
             "sortDirection": "asc"
-        ])
-        let entries = response["data"] as? [[String: Any]] ?? []
+        ]
         var messages: [ThreadMessage] = []
+        var seenItemIDs = Set<String>()
 
-        for entry in entries {
-            guard let item = entry["item"] as? [String: Any],
-                  let type = item["type"] as? String else { continue }
-
-            let sender: String
-            let content: String
-            switch type {
-            case "userMessage":
-                sender = "user"
-                content = textFromUserInput(item["content"])
-            case "agentMessage":
-                sender = "agent"
-                content = item["text"] as? String ?? ""
-            case "plan":
-                sender = "agent"
-                content = item["text"] as? String ?? ""
-            default:
-                continue
+        while true {
+            let response = try await client.request("thread/items/list", params: params)
+            let entries = response["data"] as? [[String: Any]] ?? []
+            for entry in entries {
+                guard let item = entry["item"] as? [String: Any],
+                      let type = item["type"] as? String else { continue }
+                appendMessage(from: item, type: type, to: &messages, seenItemIDs: &seenItemIDs)
             }
-            guard !content.isEmpty else { continue }
-            let id = UUID(uuidString: item["id"] as? String ?? "") ?? UUID()
-            messages.append(ThreadMessage(id: id, sender: sender, content: content, timestamp: Date()))
+
+            guard let cursor = response["nextCursor"] as? String, !cursor.isEmpty else { break }
+            params["cursor"] = cursor
         }
         return messages
+    }
+
+    private func readLegacyMessages(threadID: String) async throws -> [ThreadMessage] {
+        let response = try await client.request("thread/read", params: [
+            "threadId": threadID,
+            "includeTurns": true
+        ])
+        guard let thread = response["thread"] as? [String: Any],
+              let turns = thread["turns"] as? [[String: Any]] else {
+            throw CodexAppServerError.invalidResponse("thread/read did not include turns.")
+        }
+
+        var messages: [ThreadMessage] = []
+        var seenItemIDs = Set<String>()
+        for turn in turns {
+            for item in turn["items"] as? [[String: Any]] ?? [] {
+                guard let type = item["type"] as? String else { continue }
+                appendMessage(from: item, type: type, to: &messages, seenItemIDs: &seenItemIDs)
+            }
+        }
+        return messages
+    }
+
+    private func appendMessage(
+        from item: [String: Any],
+        type: String,
+        to messages: inout [ThreadMessage],
+        seenItemIDs: inout Set<String>
+    ) {
+        let itemID = item["id"] as? String ?? ""
+        if !itemID.isEmpty, !seenItemIDs.insert(itemID).inserted { return }
+
+        let sender: String
+        let content: String
+        switch type {
+        case "userMessage":
+            sender = "user"
+            content = textFromUserInput(item["content"])
+        case "agentMessage", "plan":
+            sender = "agent"
+            content = item["text"] as? String ?? ""
+        default:
+            return
+        }
+        guard !content.isEmpty else { return }
+        let id = UUID(uuidString: itemID) ?? UUID()
+        messages.append(ThreadMessage(id: id, sender: sender, content: content, timestamp: Date()))
     }
 
     func loadModels() async throws -> [ModelOption] {
@@ -604,6 +672,14 @@ final class RemoteCodexService {
             "summary": settings.reasoningSummary.serverValue ?? NSNull()
         ]
         _ = try await client.request("thread/settings/update", params: params)
+    }
+
+    func updateThreadFolder(_ threadID: String, cwd: String?) async throws {
+        let cleanCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        _ = try await client.request("thread/settings/update", params: [
+            "threadId": threadID,
+            "cwd": cleanCWD.isEmpty ? NSNull() : cleanCWD
+        ])
     }
 
     func loadGoal(threadID: String) async throws -> AgentThreadGoal? {
@@ -716,7 +792,9 @@ final class RemoteCodexService {
             "threadId": thread.id,
             "excludeTurns": true
         ]
-        if !ssh.remoteWorkspacePath.isEmpty { resumeParams["cwd"] = ssh.remoteWorkspacePath }
+        if let cwd = thread.cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty {
+            resumeParams["cwd"] = cwd
+        }
         if thread.activeModel != "default" { resumeParams["model"] = thread.activeModel }
         let resumed = try await client.request("thread/resume", params: resumeParams)
         let remoteThread = resumed["thread"] as? [String: Any]
@@ -727,6 +805,9 @@ final class RemoteCodexService {
             "input": [["type": "text", "text": prompt]],
             "clientUserMessageId": UUID().uuidString
         ]
+        if let cwd = thread.cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty {
+            turnParams["cwd"] = cwd
+        }
         if thread.activeModel != "default" { turnParams["model"] = thread.activeModel }
         let started = try await client.request("turn/start", params: turnParams)
         guard let turn = started["turn"] as? [String: Any],
@@ -762,7 +843,7 @@ final class RemoteCodexService {
             id: id,
             title: name?.isEmpty == false ? name! : (preview.isEmpty ? "Untitled thread" : preview),
             lastMessage: preview.isEmpty ? "Ready" : preview,
-            activeModel: "default",
+            activeModel: value["model"] as? String ?? "default",
             codexSessionID: value["sessionId"] as? String,
             connectionID: ssh.connectionID,
             status: makeStatus(value["status"]),

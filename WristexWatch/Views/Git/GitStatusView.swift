@@ -3,19 +3,53 @@ import WatchKit
 
 public struct GitStatusView: View {
     @EnvironmentObject private var viewModel: GitViewModel
+    @Environment(\.dismiss) private var dismiss
     @State private var showingCommitSheet = false
     @State private var commitMessageInput = ""
     
     public init() {}
     
     public var body: some View {
-        List {
+        VStack(spacing: 0) {
+            CompactWatchHeader("Git") {
+                if let status = viewModel.gitStatus {
+                    Text(status.branch)
+                        .font(.system(size: 8, weight: .semibold, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                Button {
+                    Task { await viewModel.loadGitStatus() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 25, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                .background(Color.white.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 25, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                .background(Color.white.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            List {
             if viewModel.isLoading && viewModel.gitStatus == nil {
                 VStack {
                     ProgressView()
-                        .padding()
+                        .padding(.bottom, 3)
                     Text("Syncing git status...")
-                        .font(.caption2)
+                        .font(.system(size: 9, design: .rounded))
                         .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity)
@@ -39,7 +73,7 @@ public struct GitStatusView: View {
                     .font(.system(size: 9, weight: .light, design: .rounded))
                     .foregroundColor(.secondary)
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 2)
                 
                 // 2. Action Grid / Buttons
                 Section(header: Text("Actions").font(.system(.footnote, design: .rounded))) {
@@ -47,12 +81,16 @@ public struct GitStatusView: View {
                         Button(action: { Task { await viewModel.pull() } }) {
                             VStack(spacing: 2) {
                                 Image(systemName: "arrow.down.circle.fill")
-                                    .font(.body)
+                                    .font(.system(size: 12, weight: .semibold))
                                 Text("Pull")
-                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                    .font(.system(size: 8, weight: .bold, design: .rounded))
                             }
+                            .frame(maxWidth: .infinity, height: 32)
                         }
-                        .tint(.blue.opacity(0.8))
+                        .buttonStyle(.plain)
+                        .foregroundColor(.blue)
+                        .background(Color.blue.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
                         
                         Button(action: {
                             commitMessageInput = ""
@@ -60,26 +98,34 @@ public struct GitStatusView: View {
                         }) {
                             VStack(spacing: 2) {
                                 Image(systemName: "plus.circle.fill")
-                                    .font(.body)
+                                    .font(.system(size: 12, weight: .semibold))
                                 Text("Commit")
-                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                    .font(.system(size: 8, weight: .bold, design: .rounded))
                             }
+                            .frame(maxWidth: .infinity, height: 32)
                         }
-                        .tint(.orange.opacity(0.8))
+                        .buttonStyle(.plain)
+                        .foregroundColor(.orange)
+                        .background(Color.orange.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
                         .disabled(status.modifiedFiles.isEmpty && status.untrackedFiles.isEmpty)
                         
                         Button(action: { Task { await viewModel.push() } }) {
                             VStack(spacing: 2) {
                                 Image(systemName: "arrow.up.circle.fill")
-                                    .font(.body)
+                                    .font(.system(size: 12, weight: .semibold))
                                 Text("Push")
-                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                    .font(.system(size: 8, weight: .bold, design: .rounded))
                             }
+                            .frame(maxWidth: .infinity, height: 32)
                         }
-                        .tint(.emerald.opacity(0.8))
+                        .buttonStyle(.plain)
+                        .foregroundColor(.emerald)
+                        .background(Color.emerald.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
                         .disabled(status.ahead == 0)
                     }
-                    .frame(height: 48)
+                    .frame(height: 34)
                     .listRowBackground(Color.clear)
                 }
                 
@@ -103,7 +149,7 @@ public struct GitStatusView: View {
                             .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
+                        .padding(.vertical, 6)
                     .listRowBackground(Color.white.opacity(0.04))
                 } else {
                     Section(header: Text("Changes").font(.system(.footnote, design: .rounded)).foregroundColor(.amber)) {
@@ -135,24 +181,32 @@ public struct GitStatusView: View {
                     }
                 }
             } else {
-                VStack(spacing: 8) {
+                VStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(.red)
                     Text("Status unavailable.")
                         .font(.caption)
+                    if let errorMessage = viewModel.errorMessage {
+                        Text(errorMessage)
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(3)
+                    }
                     Button("Reload") {
                         Task { await viewModel.loadGitStatus() }
                     }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundColor(.indigo)
                 }
                 .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
                 .listRowBackground(Color.clear)
             }
-        }
-        .navigationTitle("Git Manager")
-        .refreshable {
-            await viewModel.loadGitStatus()
-        }
-        .sheet(isPresented: $showingCommitSheet) {
+            }
+            .refreshable { await viewModel.loadGitStatus() }
+            .sheet(isPresented: $showingCommitSheet) {
             VStack(spacing: 12) {
                 Text("Commit Message")
                     .font(.headline)
@@ -187,11 +241,11 @@ public struct GitStatusView: View {
                     .disabled(commitMessageInput.isEmpty)
                 }
             }
-            .padding()
+                .padding(8)
+            }
         }
-        .task {
-            await viewModel.loadGitStatus()
-        }
+        .toolbar(.hidden, for: .navigationBar)
+        .task { await viewModel.loadGitStatus() }
     }
     
     private func presentDictation() {

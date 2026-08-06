@@ -1,5 +1,24 @@
+import Foundation
 import SwiftUI
 import WatchKit
+
+/// Renders assistant content using Foundation's Markdown parser while keeping
+/// the compact typography controlled by each watch screen.
+public struct WatchMarkdownText: View {
+    private let markdown: String
+
+    public init(_ markdown: String) {
+        self.markdown = markdown
+    }
+
+    public var body: some View {
+        if let attributed = try? AttributedString(markdown: markdown) {
+            Text(attributed)
+        } else {
+            Text(markdown)
+        }
+    }
+}
 
 public struct ChatView: View {
     @StateObject private var viewModel = ChatViewModel()
@@ -9,13 +28,33 @@ public struct ChatView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
+            CompactWatchHeader("Chat") {
+                Text(viewModel.modelName)
+                    .font(.system(size: 8, weight: .semibold, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+
+                Button {
+                    viewModel.clearChat()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 25, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.red)
+                .background(Color.red.opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .disabled(viewModel.messages.isEmpty || viewModel.isSending)
+            }
+
             if !viewModel.isConfigured {
                 setupCard
             }
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 5) {
                         if viewModel.messages.isEmpty {
                             emptyState
                         } else {
@@ -25,7 +64,8 @@ public struct ChatView: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 4)
+                    .padding(.horizontal, 2)
+                    .padding(.vertical, 2)
                 }
                 .onAppear {
                     if let last = viewModel.messages.last {
@@ -39,9 +79,13 @@ public struct ChatView: View {
                 }
             }
 
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 TextField("Message…", text: $inputText)
-                    .font(.system(.body, design: .rounded))
+                    .font(.system(size: 12, design: .rounded))
+                    .padding(.horizontal, 6)
+                    .frame(height: 30)
+                    .background(Color.white.opacity(0.1))
+                    .cornerRadius(8)
                     .submitLabel(.send)
                     .onSubmit { sendInput() }
 
@@ -53,10 +97,13 @@ public struct ChatView: View {
                             }
                         }
                     } label: {
-                        Image(systemName: "waveform")
+                            Image(systemName: "waveform")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                            .background(Color.red.opacity(0.85))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
+                    .buttonStyle(.plain)
                 } else {
                     Button {
                         Task {
@@ -68,20 +115,29 @@ public struct ChatView: View {
                         }
                     } label: {
                         Image(systemName: "mic.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                            .background(Color.indigo.opacity(0.85))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.indigo)
+                    .buttonStyle(.plain)
                     .disabled(viewModel.isSending)
                 }
 
-                Button(action: sendInput) {
+                Button {
+                    sendInput()
+                } label: {
                     Image(systemName: "arrow.up")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 30, height: 30)
+                        .background(Color.indigo.opacity(0.9))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.indigo)
+                .buttonStyle(.plain)
                 .disabled(viewModel.isSending || !viewModel.isConfigured || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .opacity(viewModel.isSending || !viewModel.isConfigured || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.45 : 1)
             }
-            .padding(.top, 4)
+            .padding(.top, 2)
             .padding(.horizontal, 2)
 
             if viewModel.isSending {
@@ -89,38 +145,21 @@ public struct ChatView: View {
                     ProgressView()
                         .scaleEffect(0.6)
                     Text("Thinking…")
-                        .font(.caption2)
+                        .font(.system(size: 9))
                         .foregroundColor(.secondary)
                 }
-                .padding(.top, 2)
+                .padding(.top, 1)
             }
 
             if let error = viewModel.errorMessage {
                 Text(error)
                     .font(.system(size: 9))
                     .foregroundColor(.red)
-                    .lineLimit(3)
-                    .padding(.horizontal, 4)
+                    .lineLimit(2)
+                    .padding(.horizontal, 2)
             }
         }
-        .navigationTitle("Chat")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Text(viewModel.modelName)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    viewModel.clearChat()
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .disabled(viewModel.messages.isEmpty || viewModel.isSending)
-            }
-        }
+        .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             viewModel.refreshConfiguration()
         }
@@ -130,51 +169,50 @@ public struct ChatView: View {
     }
 
     private var setupCard: some View {
-        VStack(spacing: 5) {
-            Label("API key needed", systemImage: "key.fill")
-                .font(.system(.caption, design: .rounded))
+        HStack(spacing: 6) {
+            Image(systemName: "key.fill")
                 .foregroundColor(.orange)
-            Text("Add your OpenAI API key in Settings to use Chat.")
-                .font(.system(size: 9))
-                .multilineTextAlignment(.center)
-                .foregroundColor(.secondary)
-            NavigationLink("Open Settings", destination: SettingsView())
-                .font(.caption2)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("API key needed")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                NavigationLink("Open Settings", destination: SettingsView())
+                    .font(.system(size: 9))
+            }
         }
-        .padding(8)
+        .padding(4)
         .frame(maxWidth: .infinity)
         .background(Color.orange.opacity(0.12))
-        .cornerRadius(10)
-        .padding(.horizontal, 4)
-        .padding(.bottom, 5)
+        .cornerRadius(9)
+        .padding(.horizontal, 2)
+        .padding(.bottom, 2)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 3) {
             Image(systemName: "message.fill")
-                .font(.title3)
+                .font(.system(size: 14))
                 .foregroundColor(.indigo)
-            Text("Private Chat")
-                .font(.system(.headline, design: .rounded))
-            Text("Messages stay on this watch and are sent to the OpenAI Responses API when you send them.")
+            Text("Start a chat")
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+            Text("Ask anything")
                 .font(.system(size: 9))
-                .multilineTextAlignment(.center)
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 18)
+        .padding(.vertical, 5)
     }
 
     private func messageBubble(_ message: ChatMessage) -> some View {
         HStack {
-            if message.role == .user { Spacer(minLength: 24) }
-            Text(message.text.isEmpty ? "…" : message.text)
-                .font(.system(.body, design: .rounded))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+            if message.role == .user { Spacer(minLength: 16) }
+            WatchMarkdownText(message.text.isEmpty ? "…" : message.text)
+                .font(.system(size: 14, design: .rounded))
+                .lineSpacing(1)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
                 .background(message.role == .user ? Color.indigo : Color.white.opacity(0.12))
-                .cornerRadius(12)
-            if message.role == .assistant { Spacer(minLength: 24) }
+                .cornerRadius(10)
+            if message.role == .assistant { Spacer(minLength: 16) }
         }
     }
 

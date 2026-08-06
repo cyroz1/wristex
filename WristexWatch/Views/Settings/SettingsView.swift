@@ -23,7 +23,15 @@ public struct SettingsView: View {
     public init() {}
 
     public var body: some View {
-        List {
+        VStack(spacing: 0) {
+            CompactWatchHeader("Settings") {
+                if isTesting || isTestingChat {
+                    ProgressView()
+                        .scaleEffect(0.55)
+                }
+            }
+
+            List {
             Section("Connection") {
                 NavigationLink {
                     SSHConnectionSettingsView(
@@ -100,9 +108,10 @@ public struct SettingsView: View {
                         .lineLimit(2)
                 }
             }
+            }
+            .listRowInsets(EdgeInsets(top: 1, leading: 3, bottom: 1, trailing: 3))
         }
-        .navigationTitle("Settings")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             guard !didLoadSettings else { return }
             didLoadSettings = true
@@ -234,26 +243,29 @@ private struct SSHConnectionSettingsView: View {
     @Binding var username: String
     @Binding var portText: String
     @Binding var workspacePath: String
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Form {
-            Section("Server") {
-                TextField("Hostname", text: $host)
-                    .textContentType(.URL)
-                    .autocorrectionDisabled()
-                TextField("Username", text: $username)
-                    .textContentType(.username)
-                    .autocorrectionDisabled()
-                TextField("Port", text: $portText)
-            }
+        VStack(spacing: 0) {
+            SettingsBackHeader(title: "SSH Host", dismiss: dismiss)
+            Form {
+                Section("Server") {
+                    TextField("Hostname", text: $host)
+                        .textContentType(.URL)
+                        .autocorrectionDisabled()
+                    TextField("Username", text: $username)
+                        .textContentType(.username)
+                        .autocorrectionDisabled()
+                    TextField("Port", text: $portText)
+                }
 
-            Section("Workspace") {
-                TextField("Remote path", text: $workspacePath)
-                    .autocorrectionDisabled()
+                Section("Workspace") {
+                    TextField("Remote path", text: $workspacePath)
+                        .autocorrectionDisabled()
+                }
             }
         }
-        .navigationTitle("SSH Host")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
     }
 }
 
@@ -261,25 +273,28 @@ private struct SSHAuthenticationSettingsView: View {
     @Binding var password: String
     @Binding var privateKeyPEM: String
     @Binding var privateKeyPassphrase: String
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Form {
-            Section("Credentials") {
-                SecureField("SSH password", text: $password)
-                    .textContentType(.password)
-                SecureField("PEM private key", text: $privateKeyPEM)
-                SecureField("Key passphrase", text: $privateKeyPassphrase)
-                    .textContentType(.password)
-            }
+        VStack(spacing: 0) {
+            SettingsBackHeader(title: "Authentication", dismiss: dismiss)
+            Form {
+                Section("Credentials") {
+                    SecureField("SSH password", text: $password)
+                        .textContentType(.password)
+                    SecureField("PEM private key", text: $privateKeyPEM)
+                    SecureField("Key passphrase", text: $privateKeyPassphrase)
+                        .textContentType(.password)
+                }
 
-            Section {
-                Text("Saved in Keychain")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
+                Section {
+                    Text("Saved in Keychain")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
         }
-        .navigationTitle("Authentication")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
     }
 }
 
@@ -291,56 +306,85 @@ private struct ChatSettingsView: View {
     @Binding var isTesting: Bool
     @Binding var feedback: String?
     let onTest: () -> Void
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Form {
-            Section("API key") {
-                SecureField("OpenAI API key", text: $apiKey)
-                    .textContentType(.password)
-                Text("Stored securely in Keychain")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-
-            Section("Model") {
-                if availableModels.isEmpty {
-                    Text(model)
-                        .font(.caption)
-                    if isLoadingModels {
-                        ProgressView("Loading…")
-                    } else {
-                        Text("Test the API to load the newest models.")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                } else {
-                    Picker("Chat model", selection: $model) {
-                        ForEach(availableModels, id: \.self) { availableModel in
-                            Text(availableModel).tag(availableModel)
-                        }
-                    }
-                    Text("Newest 5 text models for this key")
+        VStack(spacing: 0) {
+            SettingsBackHeader(title: "Chat API", dismiss: dismiss)
+            Form {
+                Section("API key") {
+                    SecureField("OpenAI API key", text: $apiKey)
+                        .textContentType(.password)
+                    Text("Stored securely in Keychain")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
-            }
 
-            Section {
-                Button(action: onTest) {
-                    Label(isTesting ? "Testing…" : "Test API", systemImage: "checkmark.circle")
+                Section("Model") {
+                    if availableModels.isEmpty {
+                        Text(model)
+                            .font(.caption)
+                        if isLoadingModels {
+                            ProgressView("Loading…")
+                        } else {
+                            Text("Test the API to load the newest models.")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    } else {
+                        Picker("Chat model", selection: $model) {
+                            ForEach(availableModels, id: \.self) { availableModel in
+                                Text(availableModel).tag(availableModel)
+                            }
+                        }
+                        Text("Newest 5 text models for this key")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
-                .disabled(isTesting)
 
-                if let feedback {
-                    Text(feedback)
-                        .font(.caption2)
-                        .foregroundColor(feedback.hasPrefix("Chat API connected") ? .green : .red)
-                        .lineLimit(3)
+                Section {
+                    Button(action: onTest) {
+                        Label(isTesting ? "Testing…" : "Test API", systemImage: "checkmark.circle")
+                    }
+                    .disabled(isTesting)
+
+                    if let feedback {
+                        Text(feedback)
+                            .font(.caption2)
+                            .foregroundColor(feedback.hasPrefix("Chat API connected") ? .green : .red)
+                            .lineLimit(3)
+                    }
                 }
             }
         }
-        .navigationTitle("Chat API")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+private struct SettingsBackHeader: View {
+    let title: String
+    let dismiss: DismissAction
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button { dismiss() } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 25, height: 24)
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.white)
+            .background(Color.white.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            Text(title)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+            Spacer()
+        }
+        .frame(height: 26)
+        .padding(.horizontal, 3)
     }
 }
 

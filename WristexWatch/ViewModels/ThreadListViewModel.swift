@@ -18,8 +18,18 @@ public final class ThreadListViewModel: ObservableObject {
         errorMessage = nil
         do {
             let remoteThreads = try await codex.listThreads()
-            threads = remoteThreads
-            remoteThreads.forEach { store.save($0) }
+            let cachedByID = Dictionary(uniqueKeysWithValues: store.threads(for: ssh.connectionID).map { ($0.id, $0) })
+            threads = remoteThreads.map { remote in
+                var current = remote
+                if let cached = cachedByID[remote.id] {
+                    if remote.activeModel == "default" {
+                        current.activeModel = cached.activeModel
+                    }
+                    current.settings = cached.settings
+                }
+                return current
+            }
+            threads.forEach { store.save($0) }
         } catch {
             // Keep the last known local list visible when the watch is offline.
             threads = store.threads(for: ssh.connectionID)
@@ -28,12 +38,12 @@ public final class ThreadListViewModel: ObservableObject {
         isLoading = false
     }
 
-    public func createNewThread(title: String) async {
+    public func createNewThread(title: String, cwd: String? = nil) async {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanTitle.isEmpty else { return }
+        let cleanCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         do {
-            let thread = try await codex.createThread(title: cleanTitle)
+            let thread = try await codex.createThread(title: cleanTitle, cwd: cleanCWD)
             store.save(thread)
             threads.insert(thread, at: 0)
             HapticManager.shared.playSuccess()

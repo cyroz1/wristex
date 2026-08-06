@@ -21,6 +21,7 @@ public final class ThreadDetailViewModel: ObservableObject {
     public init(thread: AgentThread) {
         self.thread = thread
         activeModelId = thread.activeModel
+        settings = thread.settings
     }
 
     public func loadMessages() async {
@@ -46,7 +47,7 @@ public final class ThreadDetailViewModel: ObservableObject {
     public var reasoningEffortOptions: [String] {
         let advertised = models.first(where: { $0.id == activeModelId })?.reasoningEfforts ?? []
         if advertised.isEmpty {
-            return ["default", "low", "medium", "high", "ultra"]
+            return ["default", "low", "medium", "high"]
         }
         return ["default"] + advertised.filter { $0 != "default" }
     }
@@ -111,11 +112,30 @@ public final class ThreadDetailViewModel: ObservableObject {
         do {
             try await codex.updateThreadSettings(thread.id, settings: newSettings)
             settings = newSettings
+            thread.settings = newSettings
+            store.save(thread)
             HapticManager.shared.playSuccess()
         } catch {
             errorMessage = error.localizedDescription
             HapticManager.shared.playFailure()
         }
+    }
+
+    public func updateFolder(_ folder: String) async {
+        let cleanFolder = folder.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try await codex.updateThreadFolder(thread.id, cwd: cleanFolder.isEmpty ? nil : cleanFolder)
+            thread.cwd = cleanFolder.isEmpty ? nil : cleanFolder
+            store.save(thread)
+            HapticManager.shared.playSuccess()
+        } catch {
+            errorMessage = error.localizedDescription
+            HapticManager.shared.playFailure()
+        }
+    }
+
+    public func clearError() {
+        errorMessage = nil
     }
 
     public func setGoal(_ objective: String) async {

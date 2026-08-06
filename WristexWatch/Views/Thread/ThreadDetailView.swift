@@ -3,99 +3,49 @@ import WatchKit
 
 public struct ThreadDetailView: View {
     @StateObject private var viewModel: ThreadDetailViewModel
-    @State private var showingModelPicker = false
+    @StateObject private var gitViewModel: GitViewModel
+    @Environment(\.dismiss) private var dismiss
     @State private var showingControls = false
+    @State private var showingGit = false
+    @State private var showingModelPicker = false
+    @State private var showingReasoningPicker = false
     @State private var inputText = ""
     
     public init(thread: AgentThread) {
         _viewModel = StateObject(wrappedValue: ThreadDetailViewModel(thread: thread))
+        _gitViewModel = StateObject(wrappedValue: GitViewModel(workspacePath: thread.cwd ?? ""))
     }
     
     public var body: some View {
         VStack(spacing: 0) {
+            threadHeader
+            statusLine
+
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        // Quick Action Header: Model Selector & Manual Reload
-                        HStack {
-                            Button(action: { showingModelPicker = true }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "cpu")
-                                    Text(activeModelName)
-                                }
-                                .font(.system(size: 10, weight: .bold, design: .rounded))
-                                .foregroundColor(.indigo)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(.indigo.opacity(0.15))
-                            
-                            Spacer()
-
-                            Button(action: { showingControls = true }) {
-                                Image(systemName: "slider.horizontal.3")
-                                    .font(.system(size: 11, weight: .semibold))
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(.orange.opacity(0.15))
-                            
-                            if viewModel.isLoading {
-                                ProgressView()
-                                    .scaleEffect(0.6)
-                            } else {
-                                Button(action: { Task { await viewModel.loadMessages() } }) {
-                                    Image(systemName: "arrow.clockwise")
-                                        .font(.system(size: 10))
-                                }
-                                .buttonStyle(.bordered)
-                                .tint(.secondary.opacity(0.15))
-                            }
-                        }
-                        .padding(.horizontal, 4)
-                        .padding(.bottom, 6)
-
-                        HStack(spacing: 5) {
-                            Circle()
-                                .fill(statusColor)
-                                .frame(width: 7, height: 7)
-                            Image(systemName: statusIcon)
-                                .font(.system(size: 9, weight: .semibold))
-                            Text(viewModel.thread.status.label)
-                                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            if let goal = viewModel.goal {
-                                Text("· \(goal.status.label)")
-                                    .font(.system(size: 9, design: .rounded))
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                        }
-                        .foregroundColor(statusColor)
-                        .padding(.horizontal, 6)
-                        .padding(.bottom, 6)
-                        
-                        // Messages Bubble List
+                    LazyVStack(alignment: .leading, spacing: 4) {
                         if viewModel.messages.isEmpty {
-                            VStack(spacing: 8) {
-                                Spacer()
+                            VStack(spacing: 4) {
                                 Text("No messages yet.")
-                                    .font(.caption2)
+                                    .font(.system(size: 11, design: .rounded))
                                     .foregroundColor(.secondary)
-                                Text("Tap the dictation field below to start.")
+                                Text("Use the message bubble or dictation.")
                                     .font(.system(size: 9))
                                     .foregroundColor(.secondary)
                                     .multilineTextAlignment(.center)
-                                Spacer()
                             }
                             .frame(maxWidth: .infinity)
-                            .frame(height: 100)
+                            .frame(minHeight: 90)
                         } else {
                             ForEach(viewModel.messages) { msg in
-                                HStack {
+                                HStack(spacing: 0) {
                                     if msg.sender == "user" {
-                                        Spacer(minLength: 24)
-                                        Text(msg.content)
-                                            .font(.system(.body, design: .rounded))
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
+                                        Spacer(minLength: 18)
+                                        WatchMarkdownText(msg.content)
+                                            .font(.system(size: 13, design: .rounded))
+                                            .lineSpacing(1)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
                                             .background(
                                                 LinearGradient(
                                                     colors: [.indigo, .blue],
@@ -103,24 +53,28 @@ public struct ThreadDetailView: View {
                                                     endPoint: .bottomTrailing
                                                 )
                                             )
-                                            .cornerRadius(12)
+                                            .cornerRadius(11)
                                             .id(msg.id)
                                     } else {
-                                        Text(msg.content)
-                                            .font(.system(.body, design: .rounded))
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
+                                        WatchMarkdownText(msg.content)
+                                            .font(.system(size: 13, design: .rounded))
+                                            .lineSpacing(1)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
                                             .background(Color.white.opacity(0.12))
-                                            .cornerRadius(12)
+                                            .cornerRadius(11)
                                             .id(msg.id)
-                                        Spacer(minLength: 24)
+                                        Spacer(minLength: 18)
                                     }
                                 }
                             }
                         }
                     }
-                    .padding(.horizontal, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 2)
+                    .padding(.vertical, 2)
                 }
+                .scrollIndicators(.hidden)
                 .onChange(of: viewModel.messages.count) {
                     if let lastMsg = viewModel.messages.last {
                         withAnimation {
@@ -134,125 +88,278 @@ public struct ThreadDetailView: View {
                     }
                 }
             }
-            
-            // Dictation Input Section (Apple watch default keyboard overlay + Dictation integration)
-            HStack(spacing: 6) {
-                TextField("Reply...", text: $inputText)
-                    .font(.system(.body, design: .rounded))
-                    .padding(.horizontal, 4)
-                    .submitLabel(.send)
-                    .onSubmit {
-                        let text = inputText
-                        inputText = ""
-                        Task {
-                            await viewModel.sendMessage(text)
-                        }
-                    }
-                
-                if viewModel.isVoiceRecording {
-                    Button {
-                        Task { await viewModel.stopVoiceTranscription() }
-                    } label: {
-                        Image(systemName: "waveform")
-                            .font(.body)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .frame(width: 44)
-                } else if viewModel.isSending {
-                    Button {
-                        Task { await viewModel.interruptTurn() }
-                    } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.body)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .frame(width: 44)
-                } else {
-                    Button {
-                        Task {
-                            // Prefer Codex realtime transcription over SSH;
-                            // fall back to native watchOS dictation if the
-                            // remote Codex build does not support it.
-                            if !(await viewModel.startVoiceTranscription()) {
-                                presentDictation()
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "mic.fill")
-                            .font(.body)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.indigo)
-                    .frame(width: 44)
-                }
-            }
-            .padding(.top, 4)
-            .padding(.horizontal, 2)
 
-            if let error = viewModel.errorMessage {
-                Text(error)
-                    .font(.system(size: 9))
-                    .foregroundColor(.red)
-                    .lineLimit(3)
-                    .padding(.horizontal, 4)
-            }
+            composer
         }
-        .navigationTitle(viewModel.thread.title)
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             viewModel.startPolling()
         }
         .onDisappear {
             viewModel.stopPolling()
         }
+        .sheet(isPresented: $showingControls) {
+            ThreadControlsView(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showingGit) {
+            NavigationStack {
+                GitStatusView()
+                    .environmentObject(gitViewModel)
+            }
+        }
         .sheet(isPresented: $showingModelPicker) {
-            ScrollView {
-                VStack(spacing: 8) {
-                    Text("Select Model")
-                        .font(.system(.headline, design: .rounded))
-                        .foregroundColor(.indigo)
-                        .padding(.bottom, 4)
-                    
-                    if viewModel.models.isEmpty {
-                        Text("No models available.")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    } else {
-                        ForEach(viewModel.models) { option in
-                            Button(action: {
-                                showingModelPicker = false
-                                Task {
-                                    await viewModel.selectModel(option.id)
-                                }
-                            }) {
-                                HStack {
-                                    Text(option.name)
-                                        .font(.system(.body, design: .rounded))
-                                    Spacer()
-                                    if option.id == viewModel.activeModelId {
-                                        Image(systemName: "checkmark")
-                                            .foregroundColor(.indigo)
-                                    }
+            modelSelectionSheet
+        }
+        .sheet(isPresented: $showingReasoningPicker) {
+            reasoningSelectionSheet
+        }
+    }
+
+    private var threadHeader: some View {
+        HStack(alignment: .top, spacing: 3) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 27, height: 25)
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.white)
+            .background(Color.white.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(viewModel.thread.title)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                Text(projectDirectoryLabel)
+                    .font(.system(size: 8, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 3)
+
+            HStack(spacing: 2) {
+                Button {
+                    showingControls = true
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 27, height: 25)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.orange)
+                .background(Color.orange.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                Button {
+                    showingGit = true
+                } label: {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 27, height: 25)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.green)
+                .background(Color.green.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .padding(.horizontal, 3)
+        .padding(.top, 1)
+        .padding(.bottom, 1)
+    }
+
+    private var statusLine: some View {
+        HStack(spacing: 3) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 5, height: 5)
+            Text(viewModel.thread.status.shortLabel)
+            if let goal = viewModel.goal {
+                Text("· \(goal.status.label)")
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            if viewModel.isLoading {
+                ProgressView()
+                    .scaleEffect(0.45)
+            }
+        }
+        .font(.system(size: 8, weight: .semibold, design: .rounded))
+        .foregroundColor(statusColor)
+        .padding(.horizontal, 4)
+        .padding(.bottom, 1)
+    }
+
+    private var composer: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 3) {
+                modelPicker
+                reasoningPicker
+            }
+            .frame(height: 25)
+
+            HStack(spacing: 3) {
+                TextField("Message…", text: $inputText)
+                    .font(.system(size: 13, design: .rounded))
+                    .padding(.horizontal, 8)
+                    .frame(height: 32)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 11))
+                    .submitLabel(.send)
+                    .onSubmit(sendInput)
+
+                if viewModel.isSending {
+                    Button {
+                        Task { await viewModel.interruptTurn() }
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(width: 34, height: 32)
+                            .background(Color.red.opacity(0.85))
+                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.white)
+                } else {
+                    Button(action: presentDictation) {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 34, height: 32)
+                            .background(Color.indigo.opacity(0.9))
+                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.white)
+                }
+            }
+
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .font(.system(size: 8, design: .rounded))
+                    .foregroundColor(.red)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 2)
+        .padding(.top, 2)
+        .padding(.bottom, 1)
+        .background(Color.black)
+    }
+
+    private var modelPicker: some View {
+        Button {
+            showingModelPicker = true
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "cpu")
+                Text(compactModelName)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+            }
+            .font(.system(size: 9, weight: .semibold, design: .rounded))
+            .frame(maxWidth: .infinity, minHeight: 23)
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(.indigo)
+        .background(Color.indigo.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var reasoningPicker: some View {
+        Button {
+            showingReasoningPicker = true
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "dial.medium")
+                Text(reasoningLabel)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .font(.system(size: 9, weight: .semibold, design: .rounded))
+            .frame(maxWidth: .infinity, minHeight: 23)
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(.orange)
+        .background(Color.orange.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var modelSelectionSheet: some View {
+        List {
+            Section("Model") {
+                if viewModel.models.isEmpty {
+                    Text("No models available.")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(viewModel.models) { option in
+                        Button {
+                            showingModelPicker = false
+                            Task { await viewModel.selectModel(option.id) }
+                        } label: {
+                            HStack {
+                                Text(option.name)
+                                    .lineLimit(1)
+                                Spacer()
+                                if option.id == viewModel.activeModelId {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.indigo)
                                 }
                             }
                         }
                     }
                 }
-                .padding()
             }
         }
-        .sheet(isPresented: $showingControls) {
-            ThreadControlsView(viewModel: viewModel)
+        .navigationTitle("Model")
+    }
+
+    private var reasoningSelectionSheet: some View {
+        List {
+            Section("Reasoning") {
+                ForEach(viewModel.reasoningEffortOptions, id: \.self) { effort in
+                    Button {
+                        showingReasoningPicker = false
+                        var next = viewModel.settings
+                        next.reasoningEffort = effort == "default" ? nil : effort
+                        Task { await viewModel.updateSettings(next) }
+                    } label: {
+                        HStack {
+                            Text(effort == "default" ? "Model default" : effort.capitalized)
+                            Spacer()
+                            if (viewModel.settings.reasoningEffort ?? "default") == effort {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                    }
+                }
+            }
         }
+        .navigationTitle("Reasoning")
     }
     
-    private var activeModelName: String {
+    private var compactModelName: String {
         if let current = viewModel.models.first(where: { $0.id == viewModel.activeModelId }) {
-            return current.name
+            return current.name == "Host Default" ? "Default" : current.name
         }
-        return viewModel.activeModelId.uppercased()
+        return viewModel.activeModelId == "default" ? "Default" : viewModel.activeModelId
+    }
+
+    private var reasoningLabel: String {
+        viewModel.settings.reasoningEffort?.capitalized ?? "Auto"
+    }
+
+    private var projectDirectoryLabel: String {
+        guard let cwd = viewModel.thread.cwd, !cwd.isEmpty else {
+            return "No project folder"
+        }
+        return cwd.split(separator: "/").last.map(String.init) ?? cwd
     }
 
     private var statusColor: Color {
@@ -265,29 +372,20 @@ public struct ThreadDetailView: View {
         }
     }
 
-    private var statusIcon: String {
-        switch viewModel.thread.status.kind {
-        case .notLoaded: return "moon.zzz.fill"
-        case .idle: return "checkmark.circle.fill"
-        case .active:
-            if viewModel.thread.status.activeFlags.contains(.waitingOnApproval) {
-                return "exclamationmark.shield.fill"
-            }
-            if viewModel.thread.status.activeFlags.contains(.waitingOnUserInput) {
-                return "questionmark.circle.fill"
-            }
-            return "bolt.horizontal.circle.fill"
-        case .systemError: return "xmark.octagon.fill"
-        }
+    private func sendInput() {
+        let text = inputText
+        inputText = ""
+        Task { await viewModel.sendMessage(text) }
     }
     
     private func presentDictation() {
         // Uses standard Apple Watch input session controller.
-        // On watchOS, we can call WKExtension.shared().visibleInterfaceController?.presentTextInputController
+        // On watchOS, present the native text input controller from the visible interface.
         // to show a native dictation screen and capture text.
         HapticManager.shared.playStart()
         
         #if os(watchOS)
+        viewModel.clearError()
         let rootController = WKApplication.shared().visibleInterfaceController
         rootController?.presentTextInputController(withSuggestions: nil, allowedInputMode: .plain) { results in
             guard let results = results, let firstResult = results.first as? String else {
@@ -314,9 +412,25 @@ private struct ThreadControlsView: View {
     @ObservedObject var viewModel: ThreadDetailViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var goalText = ""
+    @State private var folderText = ""
 
     var body: some View {
         List {
+            Section("Project folder") {
+                TextField("Optional remote path", text: $folderText)
+                    .font(.caption)
+                    .autocorrectionDisabled()
+
+                Button(folderText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Use no folder" : "Save folder") {
+                    Task { await viewModel.updateFolder(folderText) }
+                }
+
+                Text(viewModel.thread.cwd.map { "Current: \($0)" } ?? "No project folder")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+
             Section("Goal") {
                 TextField("What should Codex achieve?", text: $goalText)
                     .lineLimit(3)
@@ -409,6 +523,7 @@ private struct ThreadControlsView: View {
         .navigationTitle("Thread Controls")
         .onAppear {
             goalText = viewModel.goal?.objective ?? ""
+            folderText = viewModel.thread.cwd ?? ""
         }
     }
 

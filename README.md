@@ -5,6 +5,7 @@ Wristex is a watchOS remote control for Codex running on any reachable SSH host.
 ## Features
 
 - List, create, name, archive, delete, and resume remote Codex threads.
+- Give each thread an optional remote project folder and keep model/reasoning settings per thread.
 - Read thread history and send prompts with streamed agent replies.
 - Show live thread status: ready, working, needs approval, needs input, or error.
 - Interrupt a running turn.
@@ -12,7 +13,7 @@ Wristex is a watchOS remote control for Codex running on any reachable SSH host.
 - Configure per-thread goals and view goal progress/status.
 - Configure personality, approval policy, sandbox policy, and reasoning summaries.
 - Review and answer app-server approval requests for commands, file changes, user input, and MCP elicitation.
-- Dictate with Codex realtime transcription over SSH, with native watchOS dictation fallback.
+- Dictate thread replies with native watchOS dictation; Chat keeps its separate GPT transcription path.
 - Inspect remote Git status and run pull, commit, and push actions.
 - Switch to Chat mode for a separate OpenAI API conversation with streamed replies and GPT transcription.
 - Keep Chat history on the watch; configure the API key and model in Settings.
@@ -87,6 +88,7 @@ The Threads tab loads remote threads from `thread/list`. Thread detail loads his
 
 The **Thread Controls** screen exposes:
 
+- Optional remote project folder, including a no-folder choice.
 - Goal objective and goal state.
 - Model-specific reasoning effort.
 - Automatic, friendly, or pragmatic personality.
@@ -100,7 +102,7 @@ The Approvals tab subscribes to live app-server requests and shows compact, watc
 
 ### Voice
 
-The microphone button first attempts Codex realtime transcription through the remote app server. If that capability is unavailable, Wristex falls back to the native watchOS dictation controller.
+Thread replies use the native watchOS dictation controller so dictation does not depend on loading paginated Codex history. Chat keeps its separate microphone transcription path and falls back to native dictation when needed.
 
 ### Git
 

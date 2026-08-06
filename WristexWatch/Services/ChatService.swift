@@ -190,6 +190,9 @@ public final class ChatService: ObservableObject {
             throw ChatAPIError.invalidResponse
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
+            if let message = Self.apiErrorMessage(from: data) {
+                throw ChatAPIError.apiMessage(message)
+            }
             throw ChatAPIError.httpStatus(httpResponse.statusCode)
         }
 
@@ -228,14 +231,21 @@ public final class ChatService: ObservableObject {
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": model,
             "input": history.map { message in
-                [
+                var item: [String: Any] = [
                     "role": message.role.rawValue,
                     "content": [[
-                        "type": "input_text",
+                        "type": message.role == .assistant ? "output_text" : "input_text",
                         "text": message.text
                     ]]
                 ]
+                if message.role == .assistant {
+                    item["type"] = "message"
+                }
+                return item
             },
+            "tools": [[
+                "type": "web_search"
+            ]],
             "stream": true,
             "store": false
         ])
@@ -245,6 +255,13 @@ public final class ChatService: ObservableObject {
             throw ChatAPIError.invalidResponse
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
+            var errorData = Data()
+            for try await byte in bytes {
+                errorData.append(byte)
+            }
+            if let message = Self.apiErrorMessage(from: errorData) {
+                throw ChatAPIError.apiMessage(message)
+            }
             throw ChatAPIError.httpStatus(httpResponse.statusCode)
         }
 
@@ -370,6 +387,16 @@ public final class ChatService: ObservableObject {
             "audio"
         ]
         return !nonChatMarkers.contains { normalizedID.contains($0) }
+    }
+
+    private static func apiErrorMessage(from data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = object["error"] as? [String: Any],
+              let message = error["message"] as? String,
+              !message.isEmpty else {
+            return nil
+        }
+        return message
     }
 
     private struct ModelListResponse: Decodable {

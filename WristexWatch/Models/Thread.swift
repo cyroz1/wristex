@@ -46,7 +46,7 @@ public struct AgentThreadStatus: Codable, Hashable {
     }
 }
 
-public enum CodexPersonality: String, CaseIterable, Hashable, Identifiable {
+public enum CodexPersonality: String, CaseIterable, Codable, Hashable, Identifiable {
     case automatic
     case friendly
     case pragmatic
@@ -62,7 +62,7 @@ public enum CodexPersonality: String, CaseIterable, Hashable, Identifiable {
     var serverValue: String? { self == .automatic ? nil : rawValue }
 }
 
-public enum CodexApprovalPolicy: String, CaseIterable, Hashable, Identifiable {
+public enum CodexApprovalPolicy: String, CaseIterable, Codable, Hashable, Identifiable {
     case onRequest = "on-request"
     case untrusted
     case never
@@ -77,7 +77,7 @@ public enum CodexApprovalPolicy: String, CaseIterable, Hashable, Identifiable {
     }
 }
 
-public enum CodexSandboxPolicy: String, CaseIterable, Hashable, Identifiable {
+public enum CodexSandboxPolicy: String, CaseIterable, Codable, Hashable, Identifiable {
     case automatic
     case readOnly
     case workspaceWrite
@@ -103,7 +103,7 @@ public enum CodexSandboxPolicy: String, CaseIterable, Hashable, Identifiable {
     }
 }
 
-public enum CodexReasoningSummary: String, CaseIterable, Hashable, Identifiable {
+public enum CodexReasoningSummary: String, CaseIterable, Codable, Hashable, Identifiable {
     case automatic
     case concise
     case detailed
@@ -121,7 +121,7 @@ public enum CodexReasoningSummary: String, CaseIterable, Hashable, Identifiable 
     var serverValue: String? { self == .automatic ? nil : rawValue }
 }
 
-public struct ThreadSettings: Hashable {
+public struct ThreadSettings: Codable, Hashable {
     public var reasoningEffort: String?
     public var personality: CodexPersonality
     public var approvalPolicy: CodexApprovalPolicy
@@ -202,9 +202,10 @@ public struct AgentThread: Codable, Identifiable, Hashable {
     public var status: AgentThreadStatus
     public var isPinned: Bool
     public var cwd: String?
+    public var settings: ThreadSettings
 
     enum CodingKeys: String, CodingKey {
-        case id, title, lastMessage, activeModel, codexSessionID, connectionID, status, isPinned, cwd
+        case id, title, lastMessage, activeModel, codexSessionID, connectionID, status, isPinned, cwd, settings
     }
 
     public init(
@@ -216,7 +217,8 @@ public struct AgentThread: Codable, Identifiable, Hashable {
         connectionID: String? = nil,
         status: AgentThreadStatus = AgentThreadStatus(),
         isPinned: Bool = false,
-        cwd: String? = nil
+        cwd: String? = nil,
+        settings: ThreadSettings = ThreadSettings()
     ) {
         self.id = id
         self.title = title
@@ -227,6 +229,7 @@ public struct AgentThread: Codable, Identifiable, Hashable {
         self.status = status
         self.isPinned = isPinned
         self.cwd = cwd
+        self.settings = settings
     }
 
     public init(from decoder: Decoder) throws {
@@ -240,6 +243,7 @@ public struct AgentThread: Codable, Identifiable, Hashable {
         status = try container.decodeIfPresent(AgentThreadStatus.self, forKey: .status) ?? AgentThreadStatus()
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+        settings = try container.decodeIfPresent(ThreadSettings.self, forKey: .settings) ?? ThreadSettings()
     }
 }
 
