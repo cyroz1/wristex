@@ -166,6 +166,7 @@ public final class ThreadDetailViewModel: ObservableObject {
             try await codex.interrupt(threadID: thread.id)
             isSending = false
             streamingMessageID = nil
+            store.save(messages, for: thread.id)
             updateStatus(AgentThreadStatus(kind: .idle))
             HapticManager.shared.playClick()
         } catch {
@@ -233,6 +234,7 @@ public final class ThreadDetailViewModel: ObservableObject {
         }
         if method == "turn/completed" {
             updateStatus(AgentThreadStatus(kind: .idle))
+            store.save(messages, for: thread.id)
             return
         }
         if method == "thread/realtime/transcript/done",
@@ -265,7 +267,6 @@ public final class ThreadDetailViewModel: ObservableObject {
             streamingMessageID = id
             messages.append(ThreadMessage(id: id, sender: "agent", content: delta, timestamp: Date()))
         }
-        store.save(messages, for: thread.id)
     }
 
     private func updateStatus(_ status: AgentThreadStatus) {
