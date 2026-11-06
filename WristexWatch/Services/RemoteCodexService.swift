@@ -106,6 +106,10 @@ final class CodexAppServerClient {
     private var session: SSHSession?
     private var shell: SSHShell?
     private var readBuffer = Data()
+    /// Hard cap on the retained bytes of one unterminated JSON-RPC line.
+    /// Complete lines are drained in `receive`; only a peer that withholds
+    /// the newline can grow the buffer, and it is stopped at this bound.
+    private static let maxReadBufferBytes = 16 * 1024 * 1024
     private var nextRequestID = 1
     private var isInitialized = false
     private var isConnecting = false
@@ -330,6 +334,19 @@ final class CodexAppServerClient {
             }
             handle(object)
         }
+
+        // Whatever remains buffered is one incomplete line. A peer that
+        // never sends the terminating newline must not grow it without
+        // bound, so past the cap the connection is failed with an error
+        // instead of retaining data until watchOS kills the app.
+        guard readBuffer.count <= Self.maxReadBufferBytes else {
+            readBuffer.removeAll(keepingCapacity: false)
+            failPending(CodexAppServerError.transport(
+                "Codex sent an unterminated message larger than the receive limit."
+            ))
+            Task { await disconnect() }
+            return
+        }
     }
 
     private func handle(_ object: [String: Any]) {
@@ -368,6 +385,14 @@ final class CodexAppServerClient {
         }
 
         let id = rpcID(rawID)
+        // A second server request reusing a pending approval's ID would
+        // silently replace the request the wearer is being shown, and the
+        // wearer's decision would then answer the wrong request. Keep the
+        // original pending approval and reject the duplicate.
+        guard pendingApprovalRPCIDs[id] == nil else {
+            try? sendError(id: rawID, code: -32603, message: "Duplicate approval request ID.")
+            return
+        }
         pendingApprovalMethods[id] = method
         pendingApprovalRPCIDs[id] = rawID
         let request = ApprovalRequest(
@@ -461,6 +486,12 @@ final class CodexAppServerClient {
 final class RemoteCodexService {
     static let shared = RemoteCodexService()
 
+    /// Aggregate pagination ceilings. A server that always answers with a
+    /// fresh cursor must not keep a loader running (and retaining results)
+    /// forever; reaching a ceiling returns what was collected so far.
+    private static let maxThreadListPages = 25
+    private static let maxMessageListPages = 50
+
     private let client = CodexAppServerClient.shared
     private let ssh = SSHManager.shared
     private var activeTurnIDs: [String: String] = [:]
@@ -497,6 +528,8 @@ final class RemoteCodexService {
 
         var threads: [AgentThread] = []
         var seenIDs = Set<String>()
+        var seenCursors = Set<String>()
+        var pageCount = 0
         while true {
             let response = try await client.request("thread/list", params: params)
             let data = response["data"] as? [[String: Any]] ?? []
@@ -504,8 +537,12 @@ final class RemoteCodexService {
                 guard let thread = makeThread(value), seenIDs.insert(thread.id).inserted else { continue }
                 threads.append(thread)
             }
+            pageCount += 1
 
-            guard let cursor = response["nextCursor"] as? String, !cursor.isEmpty else { break }
+            guard pageCount < Self.maxThreadListPages,
+                  let cursor = response["nextCursor"] as? String,
+                  !cursor.isEmpty,
+                  seenCursors.insert(cursor).inserted else { break }
             params["cursor"] = cursor
         }
         return threads
@@ -568,6 +605,8 @@ final class RemoteCodexService {
         ]
         var messages: [ThreadMessage] = []
         var seenItemIDs = Set<String>()
+        var seenCursors = Set<String>()
+        var pageCount = 0
 
         while true {
             let response = try await client.request("thread/items/list", params: params)
@@ -577,8 +616,12 @@ final class RemoteCodexService {
                       let type = item["type"] as? String else { continue }
                 appendMessage(from: item, type: type, to: &messages, seenItemIDs: &seenItemIDs)
             }
+            pageCount += 1
 
-            guard let cursor = response["nextCursor"] as? String, !cursor.isEmpty else { break }
+            guard pageCount < Self.maxMessageListPages,
+                  let cursor = response["nextCursor"] as? String,
+                  !cursor.isEmpty,
+                  seenCursors.insert(cursor).inserted else { break }
             params["cursor"] = cursor
         }
         return messages
