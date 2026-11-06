@@ -395,36 +395,7 @@ private enum SSHConfigLoader {
             )
         }
 
-        if let bundledSettings = loadBundledDefaults() {
-            return bundledSettings
-        }
         return nil
-    }
-
-    private static func loadBundledDefaults() -> SSHConfigSettings? {
-        guard let url = Bundle.main.url(forResource: "WristexSSHConfig", withExtension: "plist"),
-              let data = try? Data(contentsOf: url),
-              let propertyList = try? PropertyListSerialization.propertyList(
-                  from: data,
-                  options: [],
-                  format: nil
-              ),
-              let values = propertyList as? [String: Any],
-              let host = values["host"] as? String,
-              let username = values["username"] as? String,
-              let port = values["port"] as? Int,
-              !host.isEmpty,
-              !username.isEmpty,
-              (1...65_535).contains(port) else {
-            return nil
-        }
-
-        return SSHConfigSettings(
-            host: host,
-            username: username,
-            port: port,
-            privateKeyPEM: nil
-        )
     }
 
     private static func candidateURLs() -> [URL] {
