@@ -310,14 +310,23 @@ public final class SSHManager: ObservableObject {
     }
 
     private func validateFingerprint(_ session: SSHSession, configuration: Configuration) throws {
-        guard let fingerprint = session.fingerprint[.sha1], !fingerprint.isEmpty else {
+        // Prefer the SHA256 fingerprint for new pins. A stored pin matching
+        // either hash of the presented key still proves the same host key,
+        // so legacy SHA1 pins keep working and are upgraded in place.
+        let sha256Fingerprint = session.fingerprint[.sha256].flatMap { $0.isEmpty ? nil : $0 }
+        let sha1Fingerprint = session.fingerprint[.sha1].flatMap { $0.isEmpty ? nil : $0 }
+        guard let fingerprint = sha256Fingerprint ?? sha1Fingerprint, !fingerprint.isEmpty else {
             throw SSHConnectionError.missingFingerprint
         }
         let key = Keys.fingerprintPrefix + "\(configuration.username)@\(configuration.host):\(configuration.port)"
-        if let pinned = defaults.string(forKey: key), pinned != fingerprint {
-            throw SSHConnectionError.hostKeyChanged
-        }
-        if defaults.string(forKey: key) == nil {
+        if let pinned = defaults.string(forKey: key) {
+            guard pinned == sha256Fingerprint || pinned == sha1Fingerprint else {
+                throw SSHConnectionError.hostKeyChanged
+            }
+            if pinned != fingerprint {
+                defaults.set(fingerprint, forKey: key)
+            }
+        } else {
             defaults.set(fingerprint, forKey: key)
         }
     }
