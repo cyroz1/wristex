@@ -66,3 +66,9 @@ DerivedData/
 xcuserdata/
 .build/
 config/ssh-test.conf
+
+# Secrets: never commit private keys or environment files
+*.pem
+*.key
+.env
+.env.*
