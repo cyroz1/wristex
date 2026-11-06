@@ -188,7 +188,9 @@ public struct SettingsView: View {
         do {
             let models = try await ChatService.shared.refreshAvailableModels()
             applyChatModels(models)
-            chatFeedback = "Chat API connected."
+            if chatFeedback == nil {
+                chatFeedback = "Chat API connected."
+            }
             HapticManager.shared.playSuccess()
         } catch {
             chatFeedback = error.localizedDescription
@@ -208,11 +210,12 @@ public struct SettingsView: View {
 
     private func applyChatModels(_ models: [String]) {
         availableChatModels = models
-        guard !models.contains(localChatModel), let newestModel = models.first else { return }
-
-        localChatModel = newestModel
-        let key = localOpenAIAPIKey.isEmpty ? ChatService.shared.apiKey : localOpenAIAPIKey
-        ChatService.shared.configure(apiKey: key, model: newestModel)
+        // A remote model list only refreshes the picker options. It must
+        // never replace or persist a model the wearer did not pick, so a
+        // saved model that is absent from the newest list is kept as-is
+        // and flagged instead of silently switched.
+        guard !models.contains(localChatModel) else { return }
+        chatFeedback = "Keeping your saved model; it is not in the newest list."
     }
 }
 
@@ -333,6 +336,9 @@ private struct ChatSettingsView: View {
                         }
                     } else {
                         Picker("Chat model", selection: $model) {
+                            if !availableModels.contains(model) {
+                                Text("\(model) (saved)").tag(model)
+                            }
                             ForEach(availableModels, id: \.self) { availableModel in
                                 Text(availableModel).tag(availableModel)
                             }
