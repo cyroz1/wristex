@@ -104,7 +104,6 @@ public struct SettingsView: View {
                         Text(fingerprint)
                             .font(.system(size: 7, design: .monospaced))
                             .foregroundColor(.secondary)
-                            .textSelection(.enabled)
                     }
 
                     Button("Trust Host Key & Test") {
@@ -129,7 +128,6 @@ public struct SettingsView: View {
                     Text("Trusted: \(fingerprint)")
                         .font(.system(size: 7, design: .monospaced))
                         .foregroundColor(.secondary)
-                        .textSelection(.enabled)
                 }
 
                 if let feedback {

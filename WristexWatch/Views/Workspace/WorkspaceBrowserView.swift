@@ -180,7 +180,6 @@ struct RemoteFilePreviewView: View {
                 ScrollView {
                     Text(contents.text.isEmpty ? "(empty file)" : contents.text)
                         .font(.system(size: 8, design: .monospaced))
-                        .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(4)
                 }
