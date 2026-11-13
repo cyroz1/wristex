@@ -396,37 +396,68 @@ public struct ThreadDetailView: View {
     }
 
     private var modelSelectionSheet: some View {
-        List {
-            Section("Model") {
+        VStack(spacing: 0) {
+            CompactWatchHeader("Model") {
+                Button {
+                    showingModelPicker = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 25, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                .background(Color.white.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            List {
                 if viewModel.models.isEmpty {
                     Text("No models available.")
                         .foregroundColor(.secondary)
+                        .listRowInsets(EdgeInsets(top: 2, leading: 3, bottom: 2, trailing: 3))
                 } else {
                     ForEach(viewModel.models) { option in
                         Button {
                             showingModelPicker = false
                             Task { await viewModel.selectModel(option.id) }
                         } label: {
-                            HStack {
+                            HStack(spacing: 4) {
                                 Text(option.name)
                                     .lineLimit(1)
-                                Spacer()
+                                Spacer(minLength: 2)
                                 if option.id == viewModel.activeModelId {
                                     Image(systemName: "checkmark")
                                         .foregroundColor(.indigo)
                                 }
                             }
                         }
+                        .listRowInsets(EdgeInsets(top: 2, leading: 3, bottom: 2, trailing: 3))
                     }
                 }
             }
+            .listStyle(.carousel)
         }
-        .navigationTitle("Model")
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     private var reasoningSelectionSheet: some View {
-        List {
-            Section("Reasoning") {
+        VStack(spacing: 0) {
+            CompactWatchHeader("Reasoning") {
+                Button {
+                    showingReasoningPicker = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 25, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                .background(Color.white.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            List {
                 ForEach(viewModel.reasoningEffortOptions, id: \.self) { effort in
                     Button {
                         showingReasoningPicker = false
@@ -434,19 +465,21 @@ public struct ThreadDetailView: View {
                         next.reasoningEffort = effort == "default" ? nil : effort
                         Task { await viewModel.updateSettings(next) }
                     } label: {
-                        HStack {
+                        HStack(spacing: 4) {
                             Text(effort == "default" ? "Model default" : effort.capitalized)
-                            Spacer()
+                            Spacer(minLength: 2)
                             if (viewModel.settings.reasoningEffort ?? "default") == effort {
                                 Image(systemName: "checkmark")
                                     .foregroundColor(.orange)
                             }
                         }
                     }
+                    .listRowInsets(EdgeInsets(top: 2, leading: 3, bottom: 2, trailing: 3))
                 }
             }
+            .listStyle(.carousel)
         }
-        .navigationTitle("Reasoning")
+        .toolbar(.hidden, for: .navigationBar)
     }
     
     private var compactModelName: String {
@@ -533,7 +566,20 @@ struct ThreadControlsView: View {
     @State private var folderText = ""
 
     var body: some View {
-        List {
+        VStack(spacing: 0) {
+            CompactWatchHeader("Thread Controls") {
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 25, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                .background(Color.white.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            List {
             Section("Project folder") {
                 TextField("Optional remote path", text: $folderText)
                     .font(.caption)
@@ -585,6 +631,7 @@ struct ThreadControlsView: View {
                             selected: (viewModel.settings.reasoningEffort ?? "default") == effort
                         )
                     }
+                    .listRowInsets(EdgeInsets(top: 1, leading: 3, bottom: 1, trailing: 3))
                 }
             }
 
@@ -597,6 +644,7 @@ struct ThreadControlsView: View {
                     } label: {
                         settingRow(title: policy.label, selected: viewModel.settings.approvalPolicy == policy)
                     }
+                    .listRowInsets(EdgeInsets(top: 1, leading: 3, bottom: 1, trailing: 3))
                 }
             }
 
@@ -609,6 +657,7 @@ struct ThreadControlsView: View {
                     } label: {
                         settingRow(title: policy.label, selected: viewModel.settings.sandboxPolicy == policy)
                     }
+                    .listRowInsets(EdgeInsets(top: 1, leading: 3, bottom: 1, trailing: 3))
                 }
             }
 
@@ -621,12 +670,14 @@ struct ThreadControlsView: View {
                     } label: {
                         settingRow(title: summary.label, selected: viewModel.settings.reasoningSummary == summary)
                     }
+                    .listRowInsets(EdgeInsets(top: 1, leading: 3, bottom: 1, trailing: 3))
                 }
             }
-
-            Button("Done") { dismiss() }
+            }
+            .listRowInsets(EdgeInsets(top: 1, leading: 3, bottom: 1, trailing: 3))
+            .listStyle(.carousel)
         }
-        .navigationTitle("Thread Controls")
+        .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             goalText = viewModel.goal?.objective ?? ""
             folderText = viewModel.thread.cwd ?? ""
