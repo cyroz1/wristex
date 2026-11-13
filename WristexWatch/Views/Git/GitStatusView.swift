@@ -107,7 +107,8 @@ public struct GitStatusView: View {
                                 Text("Pull")
                                     .font(.system(size: 8, weight: .bold, design: .rounded))
                             }
-                            .frame(maxWidth: .infinity, height: 32)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 32)
                         }
                         .buttonStyle(.plain)
                         .foregroundColor(.blue)
@@ -125,7 +126,8 @@ public struct GitStatusView: View {
                                 Text("Commit")
                                     .font(.system(size: 8, weight: .bold, design: .rounded))
                             }
-                            .frame(maxWidth: .infinity, height: 32)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 32)
                         }
                         .buttonStyle(.plain)
                         .foregroundColor(.orange)
@@ -141,7 +143,8 @@ public struct GitStatusView: View {
                                 Text(status.hasUpstream ? "Push" : "Publish")
                                     .font(.system(size: 8, weight: .bold, design: .rounded))
                             }
-                            .frame(maxWidth: .infinity, height: 32)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 32)
                         }
                         .buttonStyle(.plain)
                         .foregroundColor(.emerald)

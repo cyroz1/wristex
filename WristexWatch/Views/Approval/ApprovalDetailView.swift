@@ -19,181 +19,234 @@ public struct ApprovalDetailView: View {
     
     public var body: some View {
         VStack(spacing: 0) {
-            CompactWatchHeader("Approval") {
-                Text(request.toolName)
-                    .font(.system(size: 7, weight: .semibold, design: .rounded))
-                    .foregroundColor(toolColor(request.toolName))
-                    .lineLimit(1)
-
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 25, height: 24)
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.secondary)
-                .background(Color.white.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 4) {
-                        Image(systemName: toolIcon(request.toolName))
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(toolColor(request.toolName))
-                        Text(formattedTime(request.timestamp))
-                            .font(.system(size: 8, design: .rounded))
-                            .foregroundColor(.secondary)
-                        Spacer()
-                    }
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Action")
-                            .font(.system(size: 8, weight: .semibold, design: .rounded))
-                            .foregroundColor(.secondary)
-
-                        Text(request.details)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(request.toolName == "run_command" ? .green : .white)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(4)
-                            .background(Color.black.opacity(0.6))
-                            .cornerRadius(5)
-                    }
-                    .padding(4)
-                    .background(Color.white.opacity(0.08))
-                    .cornerRadius(6)
-
-                    if request.responseMethod == "item/permissions/requestApproval" {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Grant access for")
-                                .font(.system(size: 8, weight: .semibold, design: .rounded))
-                                .foregroundColor(.secondary)
-                            Picker("Scope", selection: $permissionScope) {
-                                Text("This turn").tag("turn")
-                                Text("Session").tag("session")
-                            }
-                        }
-                    }
-
-                    if request.responseMethod == "item/tool/requestUserInput" {
-                        ForEach(request.questions) { question in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(question.question)
-                                    .font(.system(size: 9, weight: .medium, design: .rounded))
-                                    .fixedSize(horizontal: false, vertical: true)
-
-                                if let options = question.options, !options.isEmpty {
-                                    Picker(question.header, selection: selectionBinding(for: question)) {
-                                        Text("Choose…").tag("")
-                                        ForEach(options) { option in
-                                            Text(option.label).tag(option.label)
-                                        }
-                                        if question.isOther {
-                                            Text("Other").tag("__other__")
-                                        }
-                                    }
-                                    if let selected = selectedOptions[question.id],
-                                       let option = options.first(where: { $0.label == selected }),
-                                       !option.description.isEmpty {
-                                        Text(option.description)
-                                            .font(.system(size: 8, design: .rounded))
-                                            .foregroundColor(.secondary)
-                                    }
-                                    if question.isOther && selectedOptions[question.id] == "__other__" {
-                                        answerField("Your answer", question: question, binding: otherBinding(for: question))
-                                    }
-                                } else {
-                                    answerField(question.header, question: question, binding: answerBinding(for: question))
-                                }
-                            }
-                            .padding(4)
-                            .background(Color.white.opacity(0.08))
-                            .cornerRadius(6)
-                        }
-                    }
-
-                    if request.responseMethod == "mcpServer/elicitation/request" {
-                        if let url = elicitationURL {
-                            Link(destination: url) {
-                                Label("Open secure request", systemImage: "arrow.up.right.square")
-                                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            }
-                        }
-                        if request.elicitationMode == "url" {
-                            Text("Open the secure link, then approve to finish.")
-                                .font(.system(size: 8, design: .rounded))
-                                .foregroundColor(.secondary)
-                        } else if request.elicitationMode == "openai/userVerification" {
-                            Text("This needs a verification proof Wristex cannot provide. Use a Codex client that supports device verification.")
-                                .font(.system(size: 8, design: .rounded))
-                                .foregroundColor(.orange)
-                        } else if !supportedFormModes.contains(request.elicitationMode ?? "") {
-                            Text("This request type cannot be approved from Wristex.")
-                                .font(.system(size: 8, design: .rounded))
-                                .foregroundColor(.orange)
-                        }
-                        ForEach(request.formFields) { field in
-                            elicitationField(field)
-                        }
-                    }
-
-                    if let error = viewModel.errorMessage {
-                        Text(error)
-                            .font(.system(size: 8, design: .rounded))
-                            .foregroundColor(.red)
-                    }
-
-                    HStack(spacing: 4) {
-                        Button {
-                            Task {
-                                if await viewModel.respond(id: request.id, approve: false) {
-                                    dismiss()
-                                }
-                            }
-                        } label: {
-                            Label(request.responseMethod == "item/tool/requestUserInput" ? "Skip" : "Deny", systemImage: "xmark")
-                                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                                .frame(maxWidth: .infinity, height: 30)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundColor(.white)
-                        .background(Color.red.opacity(0.85))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .disabled(viewModel.isLoading)
-
-                        Button {
-                            Task {
-                                if await viewModel.respond(
-                                    id: request.id,
-                                    approve: true,
-                                    permissionScope: permissionScope,
-                                    answers: responseAnswers,
-                                    elicitationContent: elicitationContent
-                                ) {
-                                    dismiss()
-                                }
-                            }
-                        } label: {
-                            Label(approveLabel, systemImage: "checkmark")
-                                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                                .frame(maxWidth: .infinity, height: 30)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundColor(.white)
-                        .background(Color.emerald.opacity(0.85))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .disabled(viewModel.isLoading || !canApprove)
-                    }
-                }
-                .padding(.horizontal, 3)
-                .padding(.vertical, 3)
-            }
+            approvalHeader
+            ScrollView { approvalContent }
         }
         .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var approvalHeader: some View {
+        CompactWatchHeader("Approval") {
+            Text(request.toolName)
+                .font(.system(size: 7, weight: .semibold, design: .rounded))
+                .foregroundColor(toolColor(request.toolName))
+                .lineLimit(1)
+
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 25, height: 24)
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
+            .background(Color.white.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private var approvalContent: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            requestMetadata
+            actionCard
+            permissionScopePicker
+            userInputFields
+            elicitationFields
+            errorLabel
+            responseButtons
+        }
+        .padding(.horizontal, 3)
+        .padding(.vertical, 3)
+    }
+
+    private var requestMetadata: some View {
+        HStack(spacing: 4) {
+            Image(systemName: toolIcon(request.toolName))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(toolColor(request.toolName))
+            Text(formattedTime(request.timestamp))
+                .font(.system(size: 8, design: .rounded))
+                .foregroundColor(.secondary)
+            Spacer()
+        }
+    }
+
+    private var actionCard: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Action")
+                .font(.system(size: 8, weight: .semibold, design: .rounded))
+                .foregroundColor(.secondary)
+
+            Text(request.details)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(request.toolName == "run_command" ? .green : .white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(4)
+                .background(Color.black.opacity(0.6))
+                .cornerRadius(5)
+        }
+        .padding(4)
+        .background(Color.white.opacity(0.08))
+        .cornerRadius(6)
+    }
+
+    @ViewBuilder
+    private var permissionScopePicker: some View {
+        if request.responseMethod == "item/permissions/requestApproval" {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Grant access for")
+                    .font(.system(size: 8, weight: .semibold, design: .rounded))
+                    .foregroundColor(.secondary)
+                Picker("Scope", selection: $permissionScope) {
+                    Text("This turn").tag("turn")
+                    Text("Session").tag("session")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var userInputFields: some View {
+        if request.responseMethod == "item/tool/requestUserInput" {
+            ForEach(request.questions) { question in
+                userInputCard(question)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func userInputCard(_ question: ApprovalQuestion) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(question.question)
+                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let options = question.options, !options.isEmpty {
+                Picker(question.header, selection: selectionBinding(for: question)) {
+                    Text("Choose…").tag("")
+                    ForEach(options) { option in
+                        Text(option.label).tag(option.label)
+                    }
+                    if question.isOther {
+                        Text("Other").tag("__other__")
+                    }
+                }
+                optionDescription(for: question, options: options)
+                if question.isOther && selectedOptions[question.id] == "__other__" {
+                    answerField("Your answer", question: question, binding: otherBinding(for: question))
+                }
+            } else {
+                answerField(question.header, question: question, binding: answerBinding(for: question))
+            }
+        }
+        .padding(4)
+        .background(Color.white.opacity(0.08))
+        .cornerRadius(6)
+    }
+
+    @ViewBuilder
+    private func optionDescription(for question: ApprovalQuestion, options: [ApprovalQuestionOption]) -> some View {
+        if let selected = selectedOptions[question.id],
+           let option = options.first(where: { $0.label == selected }),
+           !option.description.isEmpty {
+            Text(option.description)
+                .font(.system(size: 8, design: .rounded))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var elicitationFields: some View {
+        if request.responseMethod == "mcpServer/elicitation/request" {
+            if let url = elicitationURL {
+                Link(destination: url) {
+                    Label("Open secure request", systemImage: "arrow.up.right.square")
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                }
+            }
+            elicitationNotice
+            ForEach(request.formFields) { field in
+                elicitationField(field)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var elicitationNotice: some View {
+        if request.elicitationMode == "url" {
+            Text("Open the secure link, then approve to finish.")
+                .font(.system(size: 8, design: .rounded))
+                .foregroundColor(.secondary)
+        } else if request.elicitationMode == "openai/userVerification" {
+            Text("This needs a verification proof Wristex cannot provide. Use a Codex client that supports device verification.")
+                .font(.system(size: 8, design: .rounded))
+                .foregroundColor(.orange)
+        } else if !supportedFormModes.contains(request.elicitationMode ?? "") {
+            Text("This request type cannot be approved from Wristex.")
+                .font(.system(size: 8, design: .rounded))
+                .foregroundColor(.orange)
+        }
+    }
+
+    @ViewBuilder
+    private var errorLabel: some View {
+        if let error = viewModel.errorMessage {
+            Text(error)
+                .font(.system(size: 8, design: .rounded))
+                .foregroundColor(.red)
+        }
+    }
+
+    private var responseButtons: some View {
+        HStack(spacing: 4) {
+            denyButton
+            approveButton
+        }
+    }
+
+    private var denyButton: some View {
+        Button {
+            Task {
+                if await viewModel.respond(id: request.id, approve: false) {
+                    dismiss()
+                }
+            }
+        } label: {
+            Label(request.responseMethod == "item/tool/requestUserInput" ? "Skip" : "Deny", systemImage: "xmark")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .frame(maxWidth: .infinity)
+                .frame(height: 30)
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(.white)
+        .background(Color.red.opacity(0.85))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .disabled(viewModel.isLoading)
+    }
+
+    private var approveButton: some View {
+        Button {
+            Task {
+                if await viewModel.respond(
+                    id: request.id,
+                    approve: true,
+                    permissionScope: permissionScope,
+                    answers: responseAnswers,
+                    elicitationContent: elicitationContent
+                ) {
+                    dismiss()
+                }
+            }
+        } label: {
+            Label(approveLabel, systemImage: "checkmark")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .frame(maxWidth: .infinity)
+                .frame(height: 30)
+        }
+        .buttonStyle(.plain)
+        .foregroundColor(.white)
+        .background(Color.emerald.opacity(0.85))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .disabled(viewModel.isLoading || !canApprove)
     }
 
     private var approveLabel: String {
