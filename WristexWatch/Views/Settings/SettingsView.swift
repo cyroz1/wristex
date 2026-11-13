@@ -7,6 +7,7 @@ public struct SettingsView: View {
     @State private var localUsername = ""
     @State private var localPortText = "22"
     @State private var localWorkspacePath = ""
+    @State private var localAuthenticationMethod: SSHAuthenticationMethod = .password
     @State private var localPassword = ""
     @State private var localPrivateKeyPEM = ""
     @State private var localPrivateKeyPassphrase = ""
@@ -50,6 +51,7 @@ public struct SettingsView: View {
 
                 NavigationLink {
                     SSHAuthenticationSettingsView(
+                        authenticationMethod: $localAuthenticationMethod,
                         password: $localPassword,
                         privateKeyPEM: $localPrivateKeyPEM,
                         privateKeyPassphrase: $localPrivateKeyPassphrase
@@ -94,11 +96,40 @@ public struct SettingsView: View {
                 }
                 .disabled(isTesting)
 
+                if let fingerprint = sshManager.pendingFingerprint {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Verify this host key before trusting it")
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                        Text(fingerprint)
+                            .font(.system(size: 7, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
+                    }
+
+                    Button("Trust Host Key & Test") {
+                        guard saveSSHSettings() else { return }
+                        guard sshManager.trustPendingFingerprint() else {
+                            feedback = "Host settings changed. Tap Save & Test to check again."
+                            return
+                        }
+                        Task { await saveAndTest() }
+                    }
+                    .disabled(isTesting)
+                }
+
                 if sshManager.hasPinnedFingerprint {
                     Button("Forget Host Key", role: .destructive) {
                         sshManager.forgetHostFingerprint()
                         feedback = "Host key forgotten."
                     }
+                }
+
+                if let fingerprint = sshManager.pinnedFingerprint {
+                    Text("Trusted: \(fingerprint)")
+                        .font(.system(size: 7, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
                 }
 
                 if let feedback {
@@ -130,11 +161,14 @@ public struct SettingsView: View {
     }
 
     private var authenticationSummary: String {
-        if !localPrivateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Private key"
+        switch localAuthenticationMethod {
+        case .password:
+            return localPassword.isEmpty ? "Password not set" : "Password"
+        case .privateKey:
+            return localPrivateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Private key not set"
+                : "Private key"
         }
-        if !localPassword.isEmpty { return "Password" }
-        return "Not configured"
     }
 
     private var chatSummary: String {
@@ -149,6 +183,7 @@ public struct SettingsView: View {
         localUsername = sshManager.username
         localPortText = String(sshManager.port)
         localWorkspacePath = sshManager.remoteWorkspacePath
+        localAuthenticationMethod = sshManager.authenticationMethod
         localPassword = sshManager.password
         localPrivateKeyPEM = sshManager.privateKeyPEM
         localPrivateKeyPassphrase = sshManager.privateKeyPassphrase
@@ -158,14 +193,13 @@ public struct SettingsView: View {
     }
 
     private func saveAndTest() async {
+        guard saveSSHSettings() else { return }
         await CodexAppServerClient.shared.disconnect()
-        sshManager.host = localHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        sshManager.username = localUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-        sshManager.port = Int(localPortText) ?? 22
-        sshManager.remoteWorkspacePath = localWorkspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
-        sshManager.password = localPassword
-        sshManager.privateKeyPEM = localPrivateKeyPEM
-        sshManager.privateKeyPassphrase = localPrivateKeyPassphrase
+        guard sshManager.credentialStorageError == nil else {
+            feedback = sshManager.credentialStorageError
+            HapticManager.shared.playFailure()
+            return
+        }
         ChatService.shared.configure(apiKey: localOpenAIAPIKey, model: localChatModel)
 
         isTesting = true
@@ -179,6 +213,28 @@ public struct SettingsView: View {
             HapticManager.shared.playFailure()
         }
         isTesting = false
+    }
+
+    @discardableResult
+    private func saveSSHSettings() -> Bool {
+        let portInput = localPortText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsedPort = portInput.isEmpty ? 22 : Int(portInput)
+        guard let parsedPort, (1...65_535).contains(parsedPort) else {
+            feedback = "Enter a port from 1 to 65535."
+            HapticManager.shared.playFailure()
+            return false
+        }
+
+        sshManager.host = localHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        sshManager.username = localUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        sshManager.port = parsedPort
+        sshManager.remoteWorkspacePath = localWorkspacePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        sshManager.authenticationMethod = localAuthenticationMethod
+        sshManager.password = localPassword
+        sshManager.privateKeyPEM = localPrivateKeyPEM
+        sshManager.privateKeyPassphrase = localPrivateKeyPassphrase
+        feedback = nil
+        return true
     }
 
     private func testChatAPI() async {
@@ -241,7 +297,7 @@ private struct SettingsRow: View {
     }
 }
 
-private struct SSHConnectionSettingsView: View {
+struct SSHConnectionSettingsView: View {
     @Binding var host: String
     @Binding var username: String
     @Binding var portText: String
@@ -272,26 +328,52 @@ private struct SSHConnectionSettingsView: View {
     }
 }
 
-private struct SSHAuthenticationSettingsView: View {
+struct SSHAuthenticationSettingsView: View {
+    @Binding var authenticationMethod: SSHAuthenticationMethod
     @Binding var password: String
     @Binding var privateKeyPEM: String
     @Binding var privateKeyPassphrase: String
+    @State private var isShowingPrivateKey = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 0) {
             SettingsBackHeader(title: "Authentication", dismiss: dismiss)
             Form {
+                Section("Method") {
+                    Picker("Authenticate with", selection: $authenticationMethod) {
+                        ForEach(SSHAuthenticationMethod.allCases) { method in
+                            Text(method.label).tag(method)
+                        }
+                    }
+                }
+
                 Section("Credentials") {
-                    SecureField("SSH password", text: $password)
-                        .textContentType(.password)
-                    SecureField("PEM private key", text: $privateKeyPEM)
-                    SecureField("Key passphrase", text: $privateKeyPassphrase)
-                        .textContentType(.password)
+                    switch authenticationMethod {
+                    case .password:
+                        SecureField("SSH password", text: $password)
+                            .textContentType(.password)
+                    case .privateKey:
+                        if isShowingPrivateKey {
+                            TextField("Paste PEM private key", text: $privateKeyPEM, axis: .vertical)
+                                .lineLimit(3...8)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .privacySensitive()
+                        } else {
+                            SecureField("PEM private key", text: $privateKeyPEM)
+                        }
+                        Toggle("Show key while editing", isOn: $isShowingPrivateKey)
+                        SecureField("Key passphrase", text: $privateKeyPassphrase)
+                            .textContentType(.password)
+                        Text("A private key must include its PEM header and footer.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 Section {
-                    Text("Saved in Keychain")
+                    Text("Wristex uses the selected method. SSH passwords, keys, and passphrases are stored in Keychain after Save & Test.")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -301,7 +383,7 @@ private struct SSHAuthenticationSettingsView: View {
     }
 }
 
-private struct ChatSettingsView: View {
+struct ChatSettingsView: View {
     @Binding var apiKey: String
     @Binding var model: String
     @Binding var availableModels: [String]
@@ -318,7 +400,7 @@ private struct ChatSettingsView: View {
                 Section("API key") {
                     SecureField("OpenAI API key", text: $apiKey)
                         .textContentType(.password)
-                    Text("Stored securely in Keychain")
+                    Text("Stored in Keychain. Also enables GPT thread dictation; native dictation works without it.")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }

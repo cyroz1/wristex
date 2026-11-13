@@ -11,9 +11,14 @@ public final class ThreadListViewModel: ObservableObject {
     private let store = ThreadStore.shared
     private let codex = RemoteCodexService.shared
 
-    public init() {}
+    public init(screenshotEmpty: Bool = false) {
+        if ScreenshotMode.isEnabled && !screenshotEmpty {
+            threads = [ScreenshotFixtures.thread]
+        }
+    }
 
     public func loadThreads() async {
+        guard !ScreenshotMode.isEnabled else { return }
         isLoading = true
         errorMessage = nil
         do {
@@ -22,9 +27,8 @@ public final class ThreadListViewModel: ObservableObject {
             threads = remoteThreads.map { remote in
                 var current = remote
                 if let cached = cachedByID[remote.id] {
-                    if remote.activeModel == "default" {
-                        current.activeModel = cached.activeModel
-                    }
+                    current.activeModel = cached.activeModel
+                    current.cwd = cached.cwd
                     current.settings = cached.settings
                 }
                 return current

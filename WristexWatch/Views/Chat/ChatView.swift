@@ -93,7 +93,7 @@ public struct ChatView: View {
                     Button {
                         Task {
                             if let transcript = await viewModel.stopVoiceTranscription() {
-                                await viewModel.sendMessage(transcript)
+                                self.appendDictation(transcript)
                             }
                         }
                     } label: {
@@ -226,17 +226,24 @@ public struct ChatView: View {
         HapticManager.shared.playStart()
 
         #if os(watchOS)
+        viewModel.clearError()
         let rootController = WKApplication.shared().visibleInterfaceController
         rootController?.presentTextInputController(withSuggestions: nil, allowedInputMode: .plain) { results in
             HapticManager.shared.playStop()
             guard let result = results?.first as? String else { return }
             let dictatedText = result.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !dictatedText.isEmpty else { return }
-            Task { await viewModel.sendMessage(dictatedText) }
+            self.appendDictation(dictatedText)
         }
         #else
         HapticManager.shared.playStop()
         #endif
+    }
+
+    private func appendDictation(_ text: String) {
+        let dictatedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !dictatedText.isEmpty else { return }
+        let existingText = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        inputText = existingText.isEmpty ? dictatedText : existingText + " " + dictatedText
     }
 }
 

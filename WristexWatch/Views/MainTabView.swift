@@ -26,18 +26,12 @@ public struct MainTabView: View {
     @StateObject private var approvalViewModel = ApprovalViewModel()
     @StateObject private var threadListViewModel = ThreadListViewModel()
     @StateObject private var gitViewModel = GitViewModel()
+    @Environment(\.scenePhase) private var scenePhase
     
     public init() {}
     
     public var body: some View {
         TabView {
-            NavigationStack {
-                ChatView()
-            }
-            .tabItem {
-                Label("Chat", systemImage: "message.fill")
-            }
-
             NavigationStack {
                 ThreadListView()
                     .environmentObject(threadListViewModel)
@@ -45,7 +39,7 @@ public struct MainTabView: View {
             .tabItem {
                 Label("Threads", systemImage: "bubble.left.and.bubble.right.fill")
             }
-            
+
             NavigationStack {
                 ApprovalListView()
                     .environmentObject(approvalViewModel)
@@ -63,6 +57,13 @@ public struct MainTabView: View {
             }
             
             NavigationStack {
+                ChatView()
+            }
+            .tabItem {
+                Label("Chat", systemImage: "message.fill")
+            }
+
+            NavigationStack {
                 SettingsView()
             }
             .tabItem {
@@ -78,6 +79,13 @@ public struct MainTabView: View {
         }
         .onDisappear {
             approvalViewModel.stopPolling()
+        }
+        .onChange(of: scenePhase) {
+            guard scenePhase == .active else { return }
+            Task {
+                await threadListViewModel.loadThreads()
+                await approvalViewModel.loadApprovals()
+            }
         }
     }
 }

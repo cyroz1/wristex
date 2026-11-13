@@ -2,6 +2,20 @@ import Combine
 import Foundation
 import SwiftSH
 
+public enum SSHAuthenticationMethod: String, CaseIterable, Hashable, Identifiable, Sendable {
+    case password
+    case privateKey
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .password: return "Password"
+        case .privateKey: return "Private key"
+        }
+    }
+}
+
 @MainActor
 public final class SSHManager: ObservableObject {
     public static let shared = SSHManager()
@@ -19,17 +33,24 @@ public final class SSHManager: ObservableObject {
         didSet { defaults.set(remoteWorkspacePath, forKey: Keys.workspace) }
     }
     @Published public var password: String {
-        didSet { KeychainStore.write(password, account: Keys.password) }
+        didSet { persistCredential(password, account: Keys.password, label: "password") }
     }
     @Published public var privateKeyPEM: String {
-        didSet { KeychainStore.write(privateKeyPEM, account: Keys.privateKeyPEM) }
+        didSet { persistCredential(privateKeyPEM, account: Keys.privateKeyPEM, label: "private key") }
     }
     @Published public var privateKeyPassphrase: String {
-        didSet { KeychainStore.write(privateKeyPassphrase, account: Keys.privateKeyPassphrase) }
+        didSet { persistCredential(privateKeyPassphrase, account: Keys.privateKeyPassphrase, label: "key passphrase") }
+    }
+    @Published public var authenticationMethod: SSHAuthenticationMethod {
+        didSet { defaults.set(authenticationMethod.rawValue, forKey: Keys.authenticationMethod) }
     }
     @Published public private(set) var connectionState = "Not tested"
+    @Published public private(set) var pendingFingerprint: String?
+    @Published public private(set) var credentialStorageError: String?
 
     private let defaults = UserDefaults.standard
+    private var pendingFingerprintConnectionID: String?
+    private var failedCredentialLabels = Set<String>()
 
     private enum Keys {
         static let host = "wristex_ssh_host"
@@ -39,6 +60,7 @@ public final class SSHManager: ObservableObject {
         static let password = "wristex_ssh_password"
         static let privateKeyPEM = "wristex_ssh_private_key_pem"
         static let privateKeyPassphrase = "wristex_ssh_private_key_passphrase"
+        static let authenticationMethod = "wristex_ssh_authentication_method"
         static let fingerprintPrefix = "wristex_ssh_fingerprint_"
     }
 
@@ -61,7 +83,8 @@ public final class SSHManager: ObservableObject {
         let injectedPrivateKey: String? = nil
         #endif
 
-        privateKeyPEM = injectedPrivateKey ?? KeychainStore.read(Keys.privateKeyPEM)
+        let initialPrivateKeyPEM = injectedPrivateKey ?? KeychainStore.read(Keys.privateKeyPEM)
+        privateKeyPEM = initialPrivateKeyPEM
         #if DEBUG
         let injectedPrivateKeyPassphrase = ProcessInfo.processInfo.environment[Self.debugPrivateKeyPassphraseEnvironment]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -70,15 +93,24 @@ public final class SSHManager: ObservableObject {
         #endif
 
         privateKeyPassphrase = injectedPrivateKeyPassphrase ?? KeychainStore.read(Keys.privateKeyPassphrase)
+        let savedAuthenticationMethod = defaults.string(forKey: Keys.authenticationMethod)
+            .flatMap(SSHAuthenticationMethod.init(rawValue:))
+        authenticationMethod = savedAuthenticationMethod
+            ?? (initialPrivateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .password : .privateKey)
 
         applySSHConfigDefaults()
         applyDebugEnvironmentOverrides()
 
+        if savedAuthenticationMethod == nil,
+           !privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            authenticationMethod = .privateKey
+        }
+
         if let injectedPrivateKey {
-            KeychainStore.write(injectedPrivateKey, account: Keys.privateKeyPEM)
+            persistCredential(injectedPrivateKey, account: Keys.privateKeyPEM, label: "private key")
         }
         if let injectedPrivateKeyPassphrase {
-            KeychainStore.write(injectedPrivateKeyPassphrase, account: Keys.privateKeyPassphrase)
+            persistCredential(injectedPrivateKeyPassphrase, account: Keys.privateKeyPassphrase, label: "key passphrase")
         }
 
         // Remove credentials left by early development builds.
@@ -90,10 +122,17 @@ public final class SSHManager: ObservableObject {
     }
 
     public var isConfigured: Bool {
-        !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        (!password.isEmpty || !privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
-        (1...65_535).contains(port)
+        guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (1...65_535).contains(port) else {
+            return false
+        }
+        switch authenticationMethod {
+        case .password:
+            return !password.isEmpty
+        case .privateKey:
+            return !privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     public func reloadConfigDefaults() {
@@ -101,11 +140,32 @@ public final class SSHManager: ObservableObject {
     }
 
     public var hasPinnedFingerprint: Bool {
-        defaults.string(forKey: fingerprintKey) != nil
+        pinnedFingerprint != nil
+    }
+
+    public var pinnedFingerprint: String? {
+        defaults.string(forKey: fingerprintKey)
+    }
+
+    @discardableResult
+    public func trustPendingFingerprint() -> Bool {
+        guard let pendingFingerprint,
+              pendingFingerprintConnectionID == connectionID else {
+            self.pendingFingerprint = nil
+            pendingFingerprintConnectionID = nil
+            return false
+        }
+        defaults.set(pendingFingerprint, forKey: fingerprintKey)
+        self.pendingFingerprint = nil
+        pendingFingerprintConnectionID = nil
+        connectionState = "Host key trusted"
+        return true
     }
 
     public func forgetHostFingerprint() {
         defaults.removeObject(forKey: fingerprintKey)
+        pendingFingerprint = nil
+        pendingFingerprintConnectionID = nil
         connectionState = "Host key forgotten"
     }
 
@@ -188,6 +248,7 @@ public final class SSHManager: ObservableObject {
         let host: String
         let username: String
         let port: Int
+        let authenticationMethod: SSHAuthenticationMethod
         let password: String
         let privateKeyPEM: String
         let privateKeyPassphrase: String
@@ -203,13 +264,21 @@ public final class SSHManager: ObservableObject {
         guard !cleanHost.isEmpty, !cleanUser.isEmpty, (1...65_535).contains(port) else {
             throw SSHConnectionError.invalidSettings
         }
-        guard !password.isEmpty || !privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let hasSelectedCredential: Bool
+        switch authenticationMethod {
+        case .password:
+            hasSelectedCredential = !password.isEmpty
+        case .privateKey:
+            hasSelectedCredential = !privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard hasSelectedCredential else {
             throw SSHConnectionError.missingCredentials
         }
         return Configuration(
             host: cleanHost,
             username: cleanUser,
             port: port,
+            authenticationMethod: authenticationMethod,
             password: password,
             privateKeyPEM: privateKeyPEM,
             privateKeyPassphrase: privateKeyPassphrase
@@ -233,8 +302,20 @@ public final class SSHManager: ObservableObject {
         if privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let privateKeyPEM = config.privateKeyPEM {
             self.privateKeyPEM = privateKeyPEM
-            KeychainStore.write(privateKeyPEM, account: Keys.privateKeyPEM)
+            persistCredential(privateKeyPEM, account: Keys.privateKeyPEM, label: "private key")
         }
+    }
+
+    private func persistCredential(_ value: String, account: String, label: String) {
+        if KeychainStore.write(value, account: account) {
+            failedCredentialLabels.remove(label)
+        } else {
+            failedCredentialLabels.insert(label)
+        }
+
+        credentialStorageError = failedCredentialLabels.isEmpty
+            ? nil
+            : "Could not save SSH " + failedCredentialLabels.sorted().joined(separator: ", ") + " in Keychain."
     }
 
     private func applyDebugEnvironmentOverrides() {
@@ -259,15 +340,16 @@ public final class SSHManager: ObservableObject {
     private func authenticate(_ session: SSHSession, configuration: Configuration) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let challenge: AuthenticationChallenge
-            let keyText = configuration.privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let key = keyText.data(using: .utf8), !key.isEmpty {
+            switch configuration.authenticationMethod {
+            case .privateKey:
+                let key = Data(configuration.privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
                 challenge = .byPublicKeyFromMemory(
                     username: configuration.username,
                     password: configuration.privateKeyPassphrase,
                     publicKey: nil,
                     privateKey: key
                 )
-            } else {
+            case .password:
                 challenge = .byPassword(username: configuration.username, password: configuration.password)
             }
             session.authenticate(challenge) { error in
@@ -291,8 +373,10 @@ public final class SSHManager: ObservableObject {
                         continuation.resume(throwing: SSHConnectionError.missingExitStatus)
                         return
                     }
-                    let cleanOutput = String(rawOutput[..<markerRange.lowerBound])
-                        .trimmingCharacters(in: .newlines)
+                    let rawCleanOutput = String(rawOutput[..<markerRange.lowerBound])
+                    let cleanOutput = rawCleanOutput.hasSuffix("\n")
+                        ? String(rawCleanOutput.dropLast())
+                        : rawCleanOutput
                     if status == 0 {
                         continuation.resume(returning: cleanOutput)
                     } else {
@@ -310,25 +394,28 @@ public final class SSHManager: ObservableObject {
     }
 
     private func validateFingerprint(_ session: SSHSession, configuration: Configuration) throws {
-        // Prefer the SHA256 fingerprint for new pins. A stored pin matching
-        // either hash of the presented key still proves the same host key,
-        // so legacy SHA1 pins keep working and are upgraded in place.
-        let sha256Fingerprint = session.fingerprint[.sha256].flatMap { $0.isEmpty ? nil : $0 }
-        let sha1Fingerprint = session.fingerprint[.sha1].flatMap { $0.isEmpty ? nil : $0 }
-        guard let fingerprint = sha256Fingerprint ?? sha1Fingerprint, !fingerprint.isEmpty else {
+        let sha256 = session.fingerprint[.sha256].flatMap { $0.isEmpty ? nil : $0 }
+        let sha1 = session.fingerprint[.sha1].flatMap { $0.isEmpty ? nil : $0 }
+        guard let fingerprint = sha256 ?? sha1 else {
             throw SSHConnectionError.missingFingerprint
         }
         let key = Keys.fingerprintPrefix + "\(configuration.username)@\(configuration.host):\(configuration.port)"
+        let formattedFingerprint = "\(sha256 == nil ? "SHA1" : "SHA256"):\(fingerprint)"
         if let pinned = defaults.string(forKey: key) {
-            guard pinned == sha256Fingerprint || pinned == sha1Fingerprint else {
-                throw SSHConnectionError.hostKeyChanged
+            if pinned == formattedFingerprint { return }
+            // Upgrade bare hashes saved by earlier builds while preserving the same key pin.
+            if (sha256 != nil && pinned == sha256) || (sha1 != nil && pinned == sha1) {
+                defaults.set(formattedFingerprint, forKey: key)
+                return
             }
-            if pinned != fingerprint {
-                defaults.set(fingerprint, forKey: key)
-            }
-        } else {
-            defaults.set(fingerprint, forKey: key)
+            pendingFingerprint = nil
+            pendingFingerprintConnectionID = nil
+            throw SSHConnectionError.hostKeyChanged
         }
+
+        pendingFingerprint = formattedFingerprint
+        pendingFingerprintConnectionID = "\(configuration.username)@\(configuration.host):\(configuration.port)"
+        throw SSHConnectionError.fingerprintNeedsApproval
     }
 }
 
@@ -336,14 +423,16 @@ enum SSHConnectionError: LocalizedError {
     case invalidSettings
     case missingCredentials
     case missingFingerprint
+    case fingerprintNeedsApproval
     case hostKeyChanged
     case missingExitStatus
 
     var errorDescription: String? {
         switch self {
         case .invalidSettings: return "Enter a valid host, username, and port."
-        case .missingCredentials: return "Enter an SSH password or private key."
+        case .missingCredentials: return "Enter the selected SSH password or private key."
         case .missingFingerprint: return "The server did not provide a host fingerprint."
+        case .fingerprintNeedsApproval: return "Verify the server fingerprint, then trust it to continue."
         case .hostKeyChanged: return "The SSH host key changed. Verify the server, then forget the saved key."
         case .missingExitStatus: return "The SSH command ended without an exit status."
         }

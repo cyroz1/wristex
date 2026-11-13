@@ -5,9 +5,13 @@ public struct GitStatusView: View {
     @EnvironmentObject private var viewModel: GitViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var showingCommitSheet = false
+    @State private var showingFiles = false
     @State private var commitMessageInput = ""
     
-    public init() {}
+    public init(screenshotCommitSheet: Bool = false) {
+        _showingCommitSheet = State(initialValue: screenshotCommitSheet)
+        _commitMessageInput = State(initialValue: screenshotCommitSheet ? "Polish Watch controls" : "")
+    }
     
     public var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +32,18 @@ public struct GitStatusView: View {
                 .buttonStyle(.plain)
                 .foregroundColor(.secondary)
                 .background(Color.white.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                Button {
+                    showingFiles = true
+                } label: {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 25, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.blue)
+                .background(Color.blue.opacity(0.12))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 Button {
@@ -66,12 +82,18 @@ public struct GitStatusView: View {
                             .lineLimit(1)
                     }
                     
-                    HStack(spacing: 12) {
-                        Label("\(status.ahead) ahead", systemImage: "arrow.up")
-                        Label("\(status.behind) behind", systemImage: "arrow.down")
+                    if status.hasUpstream {
+                        HStack(spacing: 12) {
+                            Label("\(status.ahead) ahead", systemImage: "arrow.up")
+                            Label("\(status.behind) behind", systemImage: "arrow.down")
+                        }
+                        .font(.system(size: 9, weight: .light, design: .rounded))
+                        .foregroundColor(.secondary)
+                    } else {
+                        Label(status.hasCommit ? "No upstream" : "No commits", systemImage: "arrow.up.right")
+                            .font(.system(size: 9, weight: .light, design: .rounded))
+                            .foregroundColor(.secondary)
                     }
-                    .font(.system(size: 9, weight: .light, design: .rounded))
-                    .foregroundColor(.secondary)
                 }
                 .padding(.vertical, 2)
                 
@@ -91,6 +113,7 @@ public struct GitStatusView: View {
                         .foregroundColor(.blue)
                         .background(Color.blue.opacity(0.12))
                         .clipShape(RoundedRectangle(cornerRadius: 7))
+                        .disabled(viewModel.isExecutingAction)
                         
                         Button(action: {
                             commitMessageInput = ""
@@ -109,12 +132,13 @@ public struct GitStatusView: View {
                         .background(Color.orange.opacity(0.12))
                         .clipShape(RoundedRectangle(cornerRadius: 7))
                         .disabled(status.modifiedFiles.isEmpty && status.untrackedFiles.isEmpty)
+                        .disabled(viewModel.isExecutingAction)
                         
                         Button(action: { Task { await viewModel.push() } }) {
                             VStack(spacing: 2) {
                                 Image(systemName: "arrow.up.circle.fill")
                                     .font(.system(size: 12, weight: .semibold))
-                                Text("Push")
+                                Text(status.hasUpstream ? "Push" : "Publish")
                                     .font(.system(size: 8, weight: .bold, design: .rounded))
                             }
                             .frame(maxWidth: .infinity, height: 32)
@@ -123,7 +147,8 @@ public struct GitStatusView: View {
                         .foregroundColor(.emerald)
                         .background(Color.emerald.opacity(0.12))
                         .clipShape(RoundedRectangle(cornerRadius: 7))
-                        .disabled(status.ahead == 0)
+                        .disabled(status.isDetached || !status.hasCommit || (status.hasUpstream && status.ahead == 0))
+                        .disabled(viewModel.isExecutingAction)
                     }
                     .frame(height: 34)
                     .listRowBackground(Color.clear)
@@ -136,6 +161,14 @@ public struct GitStatusView: View {
                         .foregroundColor(.emerald)
                         .multilineTextAlignment(.center)
                         .listRowBackground(Color.emerald.opacity(0.08))
+                }
+                if let error = viewModel.errorMessage, viewModel.gitStatus != nil {
+                    Text(error)
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .foregroundColor(.red)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .listRowBackground(Color.red.opacity(0.08))
                 }
                 
                 // 3. Modified Files List
@@ -154,28 +187,46 @@ public struct GitStatusView: View {
                 } else {
                     Section(header: Text("Changes").font(.system(.footnote, design: .rounded)).foregroundColor(.amber)) {
                         ForEach(status.modifiedFiles, id: \.self) { file in
-                            HStack {
-                                Image(systemName: "pencil.circle.fill")
-                                    .foregroundColor(.amber)
-                                Text(file.split(separator: "/").last ?? "")
-                                    .font(.caption2)
-                                Spacer()
-                                Text("M")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.amber)
+                            NavigationLink {
+                                RemoteFileDiffView(
+                                    filePath: file,
+                                    workspacePath: viewModel.workspacePath,
+                                    isUntracked: false
+                                )
+                            } label: {
+                                HStack {
+                                    Image(systemName: "pencil.circle.fill")
+                                        .foregroundColor(.amber)
+                                    Text(file)
+                                        .font(.caption2)
+                                        .lineLimit(2)
+                                    Spacer(minLength: 2)
+                                    Text("M")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundColor(.amber)
+                                }
                             }
                         }
                         
                         ForEach(status.untrackedFiles, id: \.self) { file in
-                            HStack {
-                                Image(systemName: "plus.circle.fill")
-                                    .foregroundColor(.emerald)
-                                Text(file.split(separator: "/").last ?? "")
-                                    .font(.caption2)
-                                Spacer()
-                                Text("A")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.emerald)
+                            NavigationLink {
+                                RemoteFileDiffView(
+                                    filePath: file,
+                                    workspacePath: viewModel.workspacePath,
+                                    isUntracked: true
+                                )
+                            } label: {
+                                HStack {
+                                    Image(systemName: "plus.circle.fill")
+                                        .foregroundColor(.emerald)
+                                    Text(file)
+                                        .font(.caption2)
+                                        .lineLimit(2)
+                                    Spacer(minLength: 2)
+                                    Text("A")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundColor(.emerald)
+                                }
                             }
                         }
                     }
@@ -242,6 +293,11 @@ public struct GitStatusView: View {
                 }
             }
                 .padding(8)
+            }
+            .sheet(isPresented: $showingFiles) {
+                NavigationStack {
+                    WorkspaceBrowserView(rootPath: viewModel.workspacePath)
+                }
             }
         }
         .toolbar(.hidden, for: .navigationBar)

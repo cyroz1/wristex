@@ -86,9 +86,6 @@ public final class ChatService: ObservableObject {
     private let transcriptionModel = "gpt-transcribe"
     private let maxVoiceBytes = 20 * 1024 * 1024
     private var voiceCapture: WatchVoiceCapture?
-    private var voiceData = Data()
-    private var voiceSampleRate = 16_000
-    private var voiceChannels = 1
 
     private init() {
         #if DEBUG
@@ -134,17 +131,7 @@ public final class ChatService: ObservableObject {
             throw ChatAPIError.apiMessage("Microphone access was denied.")
         }
 
-        voiceData.removeAll(keepingCapacity: true)
-        voiceSampleRate = 16_000
-        voiceChannels = 1
-
-        let capture = WatchVoiceCapture()
-        capture.onAudio = { [weak self] data, sampleRate, channels, _ in
-            guard let self, self.voiceData.count < self.maxVoiceBytes else { return }
-            self.voiceData.append(data.prefix(self.maxVoiceBytes - self.voiceData.count))
-            self.voiceSampleRate = sampleRate
-            self.voiceChannels = channels
-        }
+        let capture = WatchVoiceCapture(maximumAudioBytes: maxVoiceBytes)
 
         do {
             try capture.start()
@@ -160,22 +147,21 @@ public final class ChatService: ObservableObject {
             throw ChatAPIError.invalidResponse
         }
 
-        capture.stop()
+        let recording = capture.stop()
         voiceCapture = nil
-        let pcm = voiceData
-        let sampleRate = voiceSampleRate
-        let channels = voiceChannels
-        voiceData.removeAll(keepingCapacity: false)
 
-        guard !pcm.isEmpty else { throw ChatAPIError.invalidResponse }
-        let wav = makeWAV(from: pcm, sampleRate: sampleRate, channels: channels)
+        guard !recording.data.isEmpty else { throw ChatAPIError.invalidResponse }
+        let wav = makeWAV(
+            from: recording.data,
+            sampleRate: recording.sampleRate,
+            channels: recording.channels
+        )
         return try await transcribe(wav)
     }
 
     public func cancelVoiceCapture() {
         voiceCapture?.stop()
         voiceCapture = nil
-        voiceData.removeAll(keepingCapacity: false)
     }
 
     public func refreshAvailableModels() async throws -> [String] {

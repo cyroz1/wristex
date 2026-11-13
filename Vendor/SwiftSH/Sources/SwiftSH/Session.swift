@@ -218,8 +218,16 @@ open class SSHSession {
             
             // Get the host's fingerprint
             self.fingerprint = [:]
-            for hashType: FingerprintHashType in [.md5, .sha1] {
-                self.fingerprint[hashType] = self.session.fingerprint(hashType)
+            for hashType: FingerprintHashType in [.md5, .sha1, .sha256] {
+                if case .sha256 = hashType,
+                   let bytes = self.session.fingerprintBytes(.sha256) {
+                    // Match OpenSSH's `SHA256:<base64>` representation so
+                    // users can compare this value with ssh-keygen output.
+                    let digest = Data(bytes).base64EncodedString()
+                    self.fingerprint[hashType] = digest.replacingOccurrences(of: "=", with: "")
+                } else {
+                    self.fingerprint[hashType] = self.session.fingerprint(hashType)
+                }
             }
             self.log.debug("Fingerprint is \(self.fingerprint)")
         }

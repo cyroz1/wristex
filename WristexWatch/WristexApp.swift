@@ -4,7 +4,11 @@ import SwiftUI
 struct WristexApp: App {
     var body: some Scene {
         WindowGroup {
-            MainTabView()
+            if let route = ScreenshotMode.route {
+                ScreenshotCaptureView(route: route)
+            } else {
+                MainTabView()
+            }
         }
     }
 }

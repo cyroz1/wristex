@@ -46,22 +46,6 @@ public struct AgentThreadStatus: Codable, Hashable {
     }
 }
 
-public enum CodexPersonality: String, CaseIterable, Codable, Hashable, Identifiable {
-    case automatic
-    case friendly
-    case pragmatic
-
-    public var id: String { rawValue }
-    public var label: String {
-        switch self {
-        case .automatic: return "Automatic"
-        case .friendly: return "Friendly"
-        case .pragmatic: return "Pragmatic"
-        }
-    }
-    var serverValue: String? { self == .automatic ? nil : rawValue }
-}
-
 public enum CodexApprovalPolicy: String, CaseIterable, Codable, Hashable, Identifiable {
     case onRequest = "on-request"
     case untrusted
@@ -93,11 +77,30 @@ public enum CodexSandboxPolicy: String, CaseIterable, Codable, Hashable, Identif
         }
     }
 
-    var serverValue: [String: Any]? {
+    var resumeValue: String? {
+        switch self {
+        case .automatic: return nil
+        case .readOnly: return "read-only"
+        case .workspaceWrite: return "workspace-write"
+        case .dangerFullAccess: return "danger-full-access"
+        }
+    }
+
+    func turnValue(cwd: String?) -> [String: Any]? {
         switch self {
         case .automatic: return nil
         case .readOnly: return ["type": "readOnly", "networkAccess": false]
-        case .workspaceWrite: return ["type": "workspaceWrite", "networkAccess": false]
+        case .workspaceWrite:
+            guard let cwd = cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty else {
+                return nil
+            }
+            return [
+                "type": "workspaceWrite",
+                "writableRoots": [cwd],
+                "networkAccess": false,
+                "excludeTmpdirEnvVar": true,
+                "excludeSlashTmp": true
+            ]
         case .dangerFullAccess: return ["type": "dangerFullAccess"]
         }
     }
@@ -118,25 +121,27 @@ public enum CodexReasoningSummary: String, CaseIterable, Codable, Hashable, Iden
         case .none: return "Hidden"
         }
     }
-    var serverValue: String? { self == .automatic ? nil : rawValue }
+    var serverValue: String {
+        switch self {
+        case .automatic: return "auto"
+        case .concise, .detailed, .none: return rawValue
+        }
+    }
 }
 
 public struct ThreadSettings: Codable, Hashable {
     public var reasoningEffort: String?
-    public var personality: CodexPersonality
     public var approvalPolicy: CodexApprovalPolicy
     public var sandboxPolicy: CodexSandboxPolicy
     public var reasoningSummary: CodexReasoningSummary
 
     public init(
         reasoningEffort: String? = nil,
-        personality: CodexPersonality = .automatic,
         approvalPolicy: CodexApprovalPolicy = .onRequest,
         sandboxPolicy: CodexSandboxPolicy = .automatic,
         reasoningSummary: CodexReasoningSummary = .automatic
     ) {
         self.reasoningEffort = reasoningEffort
-        self.personality = personality
         self.approvalPolicy = approvalPolicy
         self.sandboxPolicy = sandboxPolicy
         self.reasoningSummary = reasoningSummary

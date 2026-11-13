@@ -1,0 +1,152 @@
+name: watchOS simulator screenshots
+
+'on':
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-capture:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Select an available Apple Watch simulator
+        id: simulator
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          data = json.loads(subprocess.check_output(
+              ["xcrun", "simctl", "list", "devices", "available", "-j"], text=True
+          ))
+          pairs = data.get("pairs", data.get("devicesAndDevicePairs", {}))
+          pair_values = pairs.values() if isinstance(pairs, dict) else pairs if isinstance(pairs, list) else []
+          active_pairs = {
+              pair.get("watch", pair.get("watchUDID")): pair.get("phone", pair.get("phoneUDID", ""))
+              for pair in pair_values
+              if pair.get("state") == "active"
+          }
+          candidates = []
+          for runtime, devices in data.get("devices", {}).items():
+              if not runtime.startswith("com.apple.CoreSimulator.SimRuntime.watchOS-"):
+                  continue
+              runtime_version = tuple(int(part) for part in re.findall(r"\d+", runtime))
+              for device in devices:
+                  if device.get("isAvailable"):
+                      watch_udid = device["udid"]
+                      candidates.append((watch_udid in active_pairs, runtime_version, watch_udid, runtime, device["name"]))
+
+          if not candidates:
+              raise SystemExit("No available watchOS simulator was found on this runner.")
+
+          _, _, watch_udid, runtime, name = max(candidates)
+          phone_udid = active_pairs.get(watch_udid, "")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"watch_udid={watch_udid}\n")
+              output.write(f"phone_udid={phone_udid}\n")
+              output.write(f"runtime={runtime}\n")
+              output.write(f"name={name}\n")
+          print(f"Selected {name} ({runtime})")
+          PY
+
+      - name: Build the watch app
+        env:
+          WATCH_UDID: ${{ steps.simulator.outputs.watch_udid }}
+        run: |
+          xcodebuild \
+            -project Wristex.xcodeproj \
+            -scheme Wristex \
+            -configuration Debug \
+            -destination "platform=watchOS Simulator,id=$WATCH_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/wristex-derived-data" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Capture app screens
+        env:
+          WATCH_UDID: ${{ steps.simulator.outputs.watch_udid }}
+          PHONE_UDID: ${{ steps.simulator.outputs.phone_udid }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/wristex-derived-data/Build/Products/Debug-watchsimulator/Wristex.app"
+          SCREENSHOT_DIR="$RUNNER_TEMP/wristex-screenshots"
+          BUNDLE_ID="com.wristex.watch"
+          mkdir -p "$SCREENSHOT_DIR"
+
+          views=(
+            tabs
+            chat
+            threads
+            threads-empty
+            new-thread
+            thread-detail
+            thread-models
+            thread-reasoning
+            thread-controls
+            approvals
+            approval-command
+            approval-permissions
+            approval-input
+            approval-mcp
+            approval-device-verification
+            git
+            git-commit
+            settings
+            ssh-host
+            ssh-auth
+            ssh-auth-key
+            chat-settings
+            workspace
+            file-preview
+            diff
+          )
+
+          if [[ -n "$PHONE_UDID" ]]; then
+            xcrun simctl boot "$PHONE_UDID" 2>/dev/null || true
+            xcrun simctl bootstatus "$PHONE_UDID" -b
+          fi
+          xcrun simctl boot "$WATCH_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$WATCH_UDID" -b
+          xcrun simctl install "$WATCH_UDID" "$APP_PATH"
+
+          for view in "${views[@]}"; do
+            echo "Capturing $view"
+            xcrun simctl launch --terminate-running-process "$WATCH_UDID" "$BUNDLE_ID" --screenshot-view "$view"
+            sleep 3
+            xcrun simctl io "$WATCH_UDID" screenshot "$SCREENSHOT_DIR/$view.png"
+          done
+
+          actual_count="$(find "$SCREENSHOT_DIR" -maxdepth 1 -type f -name '*.png' | wc -l | tr -d '[:space:]')"
+          if [[ "$actual_count" -ne "${#views[@]}" ]]; then
+            echo "Expected ${#views[@]} screenshots, found $actual_count." >&2
+            exit 1
+          fi
+          for screenshot in "$SCREENSHOT_DIR"/*.png; do
+            if [[ ! -s "$screenshot" ]]; then
+              echo "Screenshot is empty: $screenshot" >&2
+              exit 1
+            fi
+          done
+          echo "Captured $actual_count screenshots."
+
+      - name: Upload simulator screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: watchos-simulator-screenshots
+          path: ${{ runner.temp }}/wristex-screenshots
+          if-no-files-found: warn
+          retention-days: 14

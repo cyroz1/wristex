@@ -5,15 +5,22 @@ public struct ThreadDetailView: View {
     @StateObject private var viewModel: ThreadDetailViewModel
     @StateObject private var gitViewModel: GitViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingControls = false
     @State private var showingGit = false
+    @State private var showingFiles = false
     @State private var showingModelPicker = false
     @State private var showingReasoningPicker = false
     @State private var inputText = ""
     
-    public init(thread: AgentThread) {
+    public init(thread: AgentThread, screenshotSheet: String? = nil) {
         _viewModel = StateObject(wrappedValue: ThreadDetailViewModel(thread: thread))
-        _gitViewModel = StateObject(wrappedValue: GitViewModel(workspacePath: thread.cwd ?? ""))
+        _showingModelPicker = State(initialValue: screenshotSheet == "models")
+        _showingReasoningPicker = State(initialValue: screenshotSheet == "reasoning")
+        let threadWorkspace = thread.cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        _gitViewModel = StateObject(wrappedValue: GitViewModel(
+            workspacePath: threadWorkspace.isEmpty ? SSHManager.shared.remoteWorkspacePath : threadWorkspace
+        ))
     }
     
     public var body: some View {
@@ -99,6 +106,11 @@ public struct ThreadDetailView: View {
         .onDisappear {
             viewModel.stopPolling()
         }
+        .onChange(of: scenePhase) {
+            if scenePhase == .active {
+                viewModel.startPolling()
+            }
+        }
         .sheet(isPresented: $showingControls) {
             ThreadControlsView(viewModel: viewModel)
         }
@@ -106,6 +118,11 @@ public struct ThreadDetailView: View {
             NavigationStack {
                 GitStatusView()
                     .environmentObject(gitViewModel)
+            }
+        }
+        .sheet(isPresented: $showingFiles) {
+            NavigationStack {
+                WorkspaceBrowserView(rootPath: workspacePath)
             }
         }
         .sheet(isPresented: $showingModelPicker) {
@@ -143,6 +160,18 @@ public struct ThreadDetailView: View {
             Spacer(minLength: 3)
 
             HStack(spacing: 2) {
+                Button {
+                    showingFiles = true
+                } label: {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 27, height: 25)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.blue)
+                .background(Color.blue.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
                 Button {
                     showingControls = true
                 } label: {
@@ -225,8 +254,53 @@ public struct ThreadDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(.white)
+                } else if viewModel.isVoiceRecording {
+                    Button {
+                        Task {
+                            if !(await viewModel.stopVoiceTranscription()) {
+                                presentDictation()
+                            }
+                        }
+                    } label: {
+                        Group {
+                            if viewModel.isStoppingVoice {
+                                ProgressView()
+                                    .frame(width: 34, height: 32)
+                            } else {
+                                Image(systemName: "waveform")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .frame(width: 34, height: 32)
+                            }
+                        }
+                        .background(Color.red.opacity(0.85))
+                        .clipShape(RoundedRectangle(cornerRadius: 9))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.white)
+                    .disabled(viewModel.isStoppingVoice)
+                } else if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    HStack(spacing: 2) {
+                        Button(action: startDictation) {
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 26, height: 32)
+                                .background(Color.indigo.opacity(0.7))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .accessibilityLabel("Add dictation")
+
+                        Button(action: sendInput) {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 12, weight: .bold))
+                                .frame(width: 26, height: 32)
+                                .background(Color.indigo.opacity(0.9))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(.white)
                 } else {
-                    Button(action: presentDictation) {
+                    Button(action: startDictation) {
                         Image(systemName: "mic.fill")
                             .font(.system(size: 14, weight: .semibold))
                             .frame(width: 34, height: 32)
@@ -235,6 +309,37 @@ public struct ThreadDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundColor(.white)
+                }
+            }
+
+            if viewModel.isVoiceRecording || !viewModel.voiceTranscript.isEmpty {
+                HStack(spacing: 4) {
+                    Text(viewModel.voiceTranscript.isEmpty
+                         ? (viewModel.isStoppingVoice ? "Finalizing dictation…" : "Listening · tap waveform to finish")
+                         : viewModel.voiceTranscript)
+                        .font(.system(size: 8, weight: .medium, design: .rounded))
+                        .foregroundColor(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+
+                    if !viewModel.isVoiceRecording,
+                       !viewModel.voiceTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button {
+                            let dictatedText = viewModel.voiceTranscript
+                            Task { await viewModel.sendMessage(dictatedText) }
+                        } label: {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 10, weight: .bold))
+                                .frame(width: 25, height: 22)
+                                .background(Color.indigo.opacity(0.9))
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.white)
+                        .disabled(viewModel.isSending)
+                        .accessibilityLabel("Send dictation")
+                    }
                 }
             }
 
@@ -357,9 +462,15 @@ public struct ThreadDetailView: View {
 
     private var projectDirectoryLabel: String {
         guard let cwd = viewModel.thread.cwd, !cwd.isEmpty else {
-            return "No project folder"
+            let fallback = SSHManager.shared.remoteWorkspacePath
+            return fallback.isEmpty ? "No project folder" : (fallback.split(separator: "/").last.map(String.init) ?? fallback)
         }
         return cwd.split(separator: "/").last.map(String.init) ?? cwd
+    }
+
+    private var workspacePath: String {
+        let cwd = viewModel.thread.cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return cwd.isEmpty ? SSHManager.shared.remoteWorkspacePath : cwd
     }
 
     private var statusColor: Color {
@@ -376,6 +487,14 @@ public struct ThreadDetailView: View {
         let text = inputText
         inputText = ""
         Task { await viewModel.sendMessage(text) }
+    }
+
+    private func startDictation() {
+        Task {
+            if !(await viewModel.startVoiceTranscription()) {
+                presentDictation()
+            }
+        }
     }
     
     private func presentDictation() {
@@ -396,9 +515,8 @@ public struct ThreadDetailView: View {
             HapticManager.shared.playStop()
             let dictatedText = firstResult.trimmingCharacters(in: .whitespacesAndNewlines)
             if !dictatedText.isEmpty {
-                Task {
-                    await viewModel.sendMessage(dictatedText)
-                }
+                let existingText = self.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.inputText = existingText.isEmpty ? dictatedText : existingText + " " + dictatedText
             }
         }
         #else
@@ -408,7 +526,7 @@ public struct ThreadDetailView: View {
     }
 }
 
-private struct ThreadControlsView: View {
+struct ThreadControlsView: View {
     @ObservedObject var viewModel: ThreadDetailViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var goalText = ""
@@ -466,18 +584,6 @@ private struct ThreadControlsView: View {
                             title: effort == "default" ? "Model default" : effort.capitalized,
                             selected: (viewModel.settings.reasoningEffort ?? "default") == effort
                         )
-                    }
-                }
-            }
-
-            Section("Personality") {
-                ForEach(CodexPersonality.allCases) { personality in
-                    Button {
-                        var next = viewModel.settings
-                        next.personality = personality
-                        Task { await viewModel.updateSettings(next) }
-                    } label: {
-                        settingRow(title: personality.label, selected: viewModel.settings.personality == personality)
                     }
                 }
             }

@@ -14,6 +14,7 @@ enum CodexAppServerError: LocalizedError {
     case invalidResponse(String)
     case server(String)
     case transport(String)
+    case timeout(String)
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +26,8 @@ enum CodexAppServerError: LocalizedError {
             return message
         case .transport(let message):
             return "SSH app-server transport failed. " + message
+        case .timeout(let method):
+            return "Codex app-server did not respond to \(method). Check that the remote CLI is running and try again."
         }
     }
 }
@@ -32,9 +35,12 @@ enum CodexAppServerError: LocalizedError {
 @MainActor
 final class WatchVoiceCapture {
     private let audioEngine = AVAudioEngine()
+    private let capturedAudio: CapturedPCMBuffer
     private var audioSession: AVAudioSession?
 
-    var onAudio: ((Data, Int, Int, Int) -> Void)?
+    init(maximumAudioBytes: Int = 20 * 1024 * 1024) {
+        capturedAudio = CapturedPCMBuffer(maximumBytes: maximumAudioBytes)
+    }
 
     static func requestPermission() async -> Bool {
         await withCheckedContinuation { continuation in
@@ -52,28 +58,30 @@ final class WatchVoiceCapture {
 
         let input = audioEngine.inputNode
         let format = input.outputFormat(forBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+        let capturedAudio = self.capturedAudio
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
+            guard capturedAudio.beginCapture() else { return }
+            defer { capturedAudio.endCapture() }
             let data = Self.pcm16Data(from: buffer)
             let sampleRate = Int(buffer.format.sampleRate)
             let channels = Int(buffer.format.channelCount)
-            let frameCount = Int(buffer.frameLength)
-            DispatchQueue.main.async {
-                self?.onAudio?(data, sampleRate, channels, frameCount)
-            }
+            capturedAudio.append(data, sampleRate: sampleRate, channels: channels)
         }
 
         audioEngine.prepare()
         try audioEngine.start()
     }
 
-    func stop() {
+    @discardableResult
+    func stop() -> (data: Data, sampleRate: Int, channels: Int) {
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         try? audioSession?.setActive(false)
         audioSession = nil
+        return capturedAudio.finish()
     }
 
-    private static func pcm16Data(from buffer: AVAudioPCMBuffer) -> Data {
+    nonisolated private static func pcm16Data(from buffer: AVAudioPCMBuffer) -> Data {
         guard let channels = buffer.floatChannelData else { return Data() }
         let channelCount = Int(buffer.format.channelCount)
         let frameCount = Int(buffer.frameLength)
@@ -87,6 +95,57 @@ final class WatchVoiceCapture {
             }
         }
         return data
+    }
+}
+
+private final class CapturedPCMBuffer: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let maximumBytes: Int
+    private var data = Data()
+    private var sampleRate = 16_000
+    private var channels = 1
+    private var activeCaptures = 0
+    private var acceptingCaptures = true
+    private var isFinished = false
+
+    init(maximumBytes: Int) {
+        self.maximumBytes = maximumBytes
+    }
+
+    func beginCapture() -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        guard acceptingCaptures else { return false }
+        activeCaptures += 1
+        return true
+    }
+
+    func append(_ chunk: Data, sampleRate: Int, channels: Int) {
+        condition.lock()
+        defer { condition.unlock() }
+        guard !isFinished, !chunk.isEmpty, data.count < maximumBytes else { return }
+        data.append(chunk.prefix(maximumBytes - data.count))
+        self.sampleRate = sampleRate
+        self.channels = channels
+    }
+
+    func endCapture() {
+        condition.lock()
+        activeCaptures -= 1
+        if activeCaptures == 0 { condition.broadcast() }
+        condition.unlock()
+    }
+
+    func finish() -> (data: Data, sampleRate: Int, channels: Int) {
+        condition.lock()
+        acceptingCaptures = false
+        while activeCaptures > 0 {
+            condition.wait()
+        }
+        isFinished = true
+        let result = (data, sampleRate, channels)
+        condition.unlock()
+        return result
     }
 }
 
@@ -113,9 +172,13 @@ final class CodexAppServerClient {
     private var nextRequestID = 1
     private var isInitialized = false
     private var isConnecting = false
+    private var connectionGeneration = 0
     private var pendingResponses: [String: CheckedContinuation<[String: Any], Error>] = [:]
+    private var requestTimeoutTasks: [String: Task<Void, Never>] = [:]
     private var pendingApprovalMethods: [String: String] = [:]
     private var pendingApprovalRPCIDs: [String: Any] = [:]
+    private var pendingPermissionProfiles: [String: [String: Any]] = [:]
+    private var pendingElicitationModes: [String: String] = [:]
     private var pendingApprovals: [String: ApprovalRequest] = [:]
     private var turnWaiters: [String: [CheckedContinuation<[String: Any], Error>]] = [:]
     private var completedTurns: [String: Result<[String: Any], Error>] = [:]
@@ -136,10 +199,20 @@ final class CodexAppServerClient {
         }
 
         isConnecting = true
-        defer { isConnecting = false }
+        connectionGeneration += 1
+        let attemptGeneration = connectionGeneration
+        defer {
+            if connectionGeneration == attemptGeneration {
+                isConnecting = false
+            }
+        }
 
         do {
             let newSession = try await ssh.openAuthenticatedSession()
+            guard connectionGeneration == attemptGeneration else {
+                await disconnect(newSession)
+                throw CodexAppServerError.transport("The connection attempt was cancelled.")
+            }
             let newShell = try SSHShell(session: newSession)
             newSession.setCallbackQueue(queue: .main)
             session = newSession
@@ -156,6 +229,9 @@ final class CodexAppServerClient {
                     else { continuation.resume() }
                 }
             }
+            guard connectionGeneration == attemptGeneration else {
+                throw CodexAppServerError.transport("The connection attempt was cancelled.")
+            }
 
             newShell.write(Data("exec codex app-server --stdio\n".utf8))
 
@@ -170,35 +246,52 @@ final class CodexAppServerClient {
                 ]
             ]
             _ = try await sendRequest(method: "initialize", params: initializeParams)
+            guard connectionGeneration == attemptGeneration,
+                  isConnecting,
+                  session === newSession,
+                  shell === newShell else {
+                throw CodexAppServerError.transport("The SSH channel closed during initialization.")
+            }
             sendNotification(method: "initialized", params: [:])
             isInitialized = true
         } catch {
-            await disconnect()
+            if connectionGeneration == attemptGeneration {
+                await disconnect(keepingConnectAttempt: true)
+            }
             throw error
         }
     }
 
-    func disconnect() async {
+    func disconnect(keepingConnectAttempt: Bool = false) async {
         isInitialized = false
-        isConnecting = false
-        shell?.close(nil)
-        if let session {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                session.disconnect { continuation.resume() }
-            }
+        if !keepingConnectAttempt {
+            connectionGeneration += 1
+            isConnecting = false
         }
+        let closedShell = shell
+        let closedSession = session
         shell = nil
         session = nil
         readBuffer.removeAll(keepingCapacity: false)
 
         let error = CodexAppServerError.transport("The SSH channel closed.")
+        requestTimeoutTasks.values.forEach { $0.cancel() }
+        requestTimeoutTasks.removeAll()
         pendingResponses.values.forEach { $0.resume(throwing: error) }
         pendingResponses.removeAll()
         pendingApprovalMethods.removeAll()
         pendingApprovalRPCIDs.removeAll()
+        pendingPermissionProfiles.removeAll()
+        pendingElicitationModes.removeAll()
         pendingApprovals.removeAll()
         turnWaiters.values.flatMap { $0 }.forEach { $0.resume(throwing: error) }
         turnWaiters.removeAll()
+        completedTurns.removeAll()
+
+        closedShell?.close(nil)
+        if let closedSession {
+            await disconnect(closedSession)
+        }
     }
 
     func request(_ method: String, params: [String: Any] = [:]) async throws -> [String: Any] {
@@ -216,7 +309,13 @@ final class CodexAppServerClient {
         }
     }
 
-    func respondToApproval(id: String, approve: Bool) async throws {
+    func respondToApproval(
+        id: String,
+        approve: Bool,
+        permissionScope: String = "turn",
+        answers: [String: [String]] = [:],
+        elicitationContent: [String: Any] = [:]
+    ) async throws {
         guard let method = pendingApprovalMethods[id],
               let rpcID = pendingApprovalRPCIDs[id] else {
             throw CodexAppServerError.invalidResponse("Approval is no longer pending.")
@@ -239,18 +338,38 @@ final class CodexAppServerClient {
                 response = ["decision": ["denied": ["rejection": "Denied on Wristex."]]]
             }
         case "item/tool/requestUserInput":
-            // The watch UI currently exposes approve/deny. An empty answer map
-            // lets Codex continue without fabricating an answer to the user.
-            response = ["answers": [:]]
-        case "mcpServer/elicitation/request":
-            response = ["action": approve ? "accept" : "decline"]
-        case "item/permissions/requestApproval":
-            // Permission profiles are intentionally never guessed on a tiny
-            // screen. Deny is safe; approval can be added with a dedicated UI.
-            guard !approve else {
-                throw CodexAppServerError.invalidResponse("Permission approval needs a dedicated scope picker.")
+            var answerValues: [String: Any] = [:]
+            for (questionID, values) in answers where !values.isEmpty {
+                answerValues[questionID] = ["answers": values]
             }
-            response = ["permissions": [:], "scope": "turn"]
+            response = ["answers": answerValues]
+        case "mcpServer/elicitation/request":
+            if approve {
+                let supportedModes = ["form", "openai/form", "openaiForm", "url"]
+                guard let mode = pendingElicitationModes[id], supportedModes.contains(mode) else {
+                    throw CodexAppServerError.invalidResponse(
+                        "This MCP request requires a response type Wristex cannot provide. Use a Codex client that supports it."
+                    )
+                }
+            }
+            let content: Any = pendingElicitationModes[id] == "url" ? NSNull() : elicitationContent
+            response = [
+                "action": approve ? "accept" : "decline",
+                "content": approve ? content : NSNull(),
+                "_meta": NSNull()
+            ]
+        case "item/permissions/requestApproval":
+            let requestedPermissions = pendingPermissionProfiles[id] ?? [:]
+            var grantedPermissions: [String: Any] = [:]
+            if approve {
+                for key in ["network", "fileSystem"] {
+                    if let requested = requestedPermissions[key] as? [String: Any] {
+                        grantedPermissions[key] = requested
+                    }
+                }
+            }
+            let scope = approve && permissionScope == "session" ? "session" : "turn"
+            response = ["permissions": grantedPermissions, "scope": scope]
         default:
             throw CodexAppServerError.invalidResponse("Unsupported approval type.")
         }
@@ -258,6 +377,8 @@ final class CodexAppServerClient {
         try sendResponse(id: rpcID, result: response)
         pendingApprovalMethods.removeValue(forKey: id)
         pendingApprovalRPCIDs.removeValue(forKey: id)
+        pendingPermissionProfiles.removeValue(forKey: id)
+        pendingElicitationModes.removeValue(forKey: id)
         pendingApprovals.removeValue(forKey: id)
     }
 
@@ -278,10 +399,23 @@ final class CodexAppServerClient {
 
         return try await withCheckedThrowingContinuation { continuation in
             pendingResponses[id] = continuation
+            requestTimeoutTasks[id] = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                } catch {
+                    return
+                }
+                guard let self,
+                      let timedOut = self.pendingResponses.removeValue(forKey: id) else { return }
+                self.requestTimeoutTasks.removeValue(forKey: id)
+                timedOut.resume(throwing: CodexAppServerError.timeout(method))
+            }
             shell.write(data) { [weak self] error in
                 guard let self, let error else { return }
                 Task { @MainActor in
-                    self.pendingResponses.removeValue(forKey: id)?.resume(
+                    guard let continuation = self.pendingResponses.removeValue(forKey: id) else { return }
+                    self.requestTimeoutTasks.removeValue(forKey: id)?.cancel()
+                    continuation.resume(
                         throwing: CodexAppServerError.transport(error.localizedDescription)
                     )
                 }
@@ -320,7 +454,15 @@ final class CodexAppServerClient {
         // `SSHShell` exposes stderr separately. Codex can legitimately write
         // diagnostics there while still sending valid JSON-RPC on stdout, so
         // stderr is not treated as a transport failure.
-        guard let data, !data.isEmpty else { return }
+        guard let data else {
+            // SwiftSH reports a clean EOF as a final nil/nil callback. Without
+            // handling it here, the client would keep stale connected state
+            // and leave in-flight JSON-RPC requests suspended forever.
+            guard error == nil else { return }
+            handleChannelClosed()
+            return
+        }
+        guard !data.isEmpty else { return }
         readBuffer.append(data)
 
         while let newline = readBuffer.firstIndex(of: 10) {
@@ -349,6 +491,36 @@ final class CodexAppServerClient {
         }
     }
 
+    private func handleChannelClosed() {
+        guard isInitialized || isConnecting || !pendingResponses.isEmpty || !turnWaiters.isEmpty else { return }
+
+        let closedSession = session
+        connectionGeneration += 1
+        isInitialized = false
+        isConnecting = false
+        let error = CodexAppServerError.transport("The SSH channel closed.")
+        failPending(error)
+        pendingApprovalMethods.removeAll()
+        pendingApprovalRPCIDs.removeAll()
+        pendingPermissionProfiles.removeAll()
+        pendingElicitationModes.removeAll()
+        pendingApprovals.removeAll()
+        shell = nil
+        session = nil
+
+        // Invalidate any in-progress attempt. The closed session is captured
+        // here so cleanup cannot affect a later reconnect.
+        if let closedSession {
+            Task { await disconnect(closedSession) }
+        }
+    }
+
+    private func disconnect(_ session: SSHSession) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            session.disconnect { continuation.resume() }
+        }
+    }
+
     private func handle(_ object: [String: Any]) {
         if let method = object["method"] as? String {
             if let id = object["id"] {
@@ -362,6 +534,7 @@ final class CodexAppServerClient {
         guard let rawID = object["id"] else { return }
         let id = rpcID(rawID)
         guard let continuation = pendingResponses.removeValue(forKey: id) else { return }
+        requestTimeoutTasks.removeValue(forKey: id)?.cancel()
 
         if let error = object["error"] as? [String: Any] {
             let message = error["message"] as? String ?? "Codex app-server request failed."
@@ -395,6 +568,14 @@ final class CodexAppServerClient {
         }
         pendingApprovalMethods[id] = method
         pendingApprovalRPCIDs[id] = rawID
+        if method == "item/permissions/requestApproval" {
+            pendingPermissionProfiles[id] = params["permissions"] as? [String: Any] ?? [:]
+        }
+        let elicitationMode = params["mode"] as? String
+        if method == "mcpServer/elicitation/request", let elicitationMode {
+            pendingElicitationModes[id] = elicitationMode
+        }
+        let questions = (params["questions"] as? [[String: Any]] ?? []).compactMap(makeApprovalQuestion)
         let request = ApprovalRequest(
             id: id,
             toolName: toolName(for: method),
@@ -403,7 +584,12 @@ final class CodexAppServerClient {
             timestamp: approvalDate(params),
             responseMethod: method,
             threadID: params["threadId"] as? String,
-            turnID: params["turnId"] as? String
+            turnID: params["turnId"] as? String,
+            questions: questions,
+            isBlocking: params["isBlocking"] as? Bool ?? (method == "item/tool/requestUserInput"),
+            formFields: method == "mcpServer/elicitation/request" ? makeApprovalFormFields(params) : [],
+            elicitationMode: elicitationMode,
+            elicitationURL: params["url"] as? String
         )
         pendingApprovals[id] = request
         onApprovalRequest?(request)
@@ -433,6 +619,8 @@ final class CodexAppServerClient {
     }
 
     private func failPending(_ error: Error) {
+        requestTimeoutTasks.values.forEach { $0.cancel() }
+        requestTimeoutTasks.removeAll()
         pendingResponses.values.forEach { $0.resume(throwing: error) }
         pendingResponses.removeAll()
         turnWaiters.values.flatMap { $0 }.forEach { $0.resume(throwing: error) }
@@ -456,6 +644,79 @@ final class CodexAppServerClient {
         }
     }
 
+    private func makeApprovalQuestion(_ raw: [String: Any]) -> ApprovalQuestion? {
+        guard let id = raw["id"] as? String,
+              let question = raw["question"] as? String else { return nil }
+        let options = (raw["options"] as? [[String: Any]])?.compactMap { option -> ApprovalQuestionOption? in
+            guard let label = option["label"] as? String else { return nil }
+            return ApprovalQuestionOption(
+                label: label,
+                description: option["description"] as? String ?? ""
+            )
+        }
+        return ApprovalQuestion(
+            id: id,
+            header: raw["header"] as? String ?? "Answer",
+            question: question,
+            isOther: raw["isOther"] as? Bool ?? false,
+            isSecret: raw["isSecret"] as? Bool ?? false,
+            options: options
+        )
+    }
+
+    private func makeApprovalFormFields(_ params: [String: Any]) -> [ApprovalFormField] {
+        let schema = params["requestedSchema"] as? [String: Any] ?? [:]
+        let properties = schema["properties"] as? [String: Any] ?? [:]
+        let required = Set(schema["required"] as? [String] ?? [])
+
+        return properties.keys.sorted().compactMap { name in
+            guard let field = properties[name] as? [String: Any] else { return nil }
+            let rawType = field["type"] as? String ?? "string"
+            let arrayItems = field["items"] as? [String: Any]
+            let optionSchema = rawType == "array" ? (arrayItems ?? field) : field
+            let options = formOptions(from: optionSchema)
+            let kind = options.isEmpty
+                ? rawType
+                : (rawType == "array" ? "multiSelect" : "singleSelect")
+            let defaultValue: String?
+            if let values = field["default"] as? [String] {
+                defaultValue = values.joined(separator: ",")
+            } else {
+                defaultValue = field["default"].map { String(describing: $0) }
+            }
+            return ApprovalFormField(
+                name: name,
+                title: field["title"] as? String ?? name,
+                description: field["description"] as? String ?? "",
+                kind: kind,
+                required: required.contains(name),
+                isSecret: field["format"] as? String == "password",
+                defaultValue: defaultValue,
+                options: options.isEmpty ? nil : options
+            )
+        }
+    }
+
+    private func formOptions(from schema: [String: Any]) -> [ApprovalQuestionOption] {
+        if let choices = (schema["oneOf"] as? [[String: Any]]) ?? (schema["anyOf"] as? [[String: Any]]) {
+            return choices.compactMap { option in
+                guard let value = option["const"] as? String else { return nil }
+                return ApprovalQuestionOption(
+                    label: option["title"] as? String ?? value,
+                    description: value
+                )
+            }
+        }
+        guard let values = schema["enum"] as? [String] else { return [] }
+        let labels = schema["enumNames"] as? [String] ?? values
+        return values.enumerated().map { index, value in
+            ApprovalQuestionOption(
+                label: labels.indices.contains(index) ? labels[index] : value,
+                description: value
+            )
+        }
+    }
+
     private func approvalDetails(for method: String, params: [String: Any]) -> String {
         if method.contains("commandExecution"), let command = params["command"] as? String {
             return "$ " + command
@@ -466,12 +727,74 @@ final class CodexAppServerClient {
         if method.contains("fileChange") || method == "applyPatchApproval" {
             return params["reason"] as? String ?? "Codex wants to change files."
         }
+        if method == "item/permissions/requestApproval" {
+            let summary = permissionSummary(
+                params["permissions"] as? [String: Any] ?? [:],
+                cwd: params["cwd"] as? String
+            )
+            if let reason = params["reason"] as? String, !reason.isEmpty {
+                return reason + "\n" + summary
+            }
+            return summary
+        }
         if let reason = params["reason"] as? String, !reason.isEmpty { return reason }
+        if method == "mcpServer/elicitation/request" {
+            if params["mode"] as? String == "openai/userVerification" {
+                let title = params["title"] as? String ?? "Device verification"
+                let description = params["description"] as? String ?? ""
+                return description.isEmpty ? title : title + "\n" + description
+            }
+            let server = params["serverName"] as? String ?? "MCP server"
+            let message = params["message"] as? String ?? ""
+            return message.isEmpty ? server : server + "\n" + message
+        }
         if let server = params["serverName"] as? String { return "MCP server: " + server }
         if let questions = params["questions"] as? [[String: Any]] {
             return questions.compactMap { $0["question"] as? String }.joined(separator: "\n")
         }
         return "Codex is waiting for a decision."
+    }
+
+    private func permissionSummary(_ profile: [String: Any], cwd: String?) -> String {
+        var lines: [String] = []
+        if let network = profile["network"] as? [String: Any], network["enabled"] as? Bool == true {
+            lines.append("Network access")
+        }
+        if let fileSystem = profile["fileSystem"] as? [String: Any] {
+            for access in ["read", "write"] {
+                let paths = fileSystem[access] as? [String] ?? []
+                for path in paths {
+                    lines.append("\(access.capitalized): \(path)")
+                }
+            }
+            for entry in fileSystem["entries"] as? [[String: Any]] ?? [] {
+                let access = entry["access"] as? String ?? "access"
+                let path = entry["path"] as? [String: Any] ?? [:]
+                let value = permissionPathLabel(path, cwd: cwd)
+                lines.append("\(access.capitalized): \(value)")
+            }
+        }
+        return lines.isEmpty ? "Codex requested additional permissions." : lines.joined(separator: "\n")
+    }
+
+    private func permissionPathLabel(_ path: [String: Any], cwd: String?) -> String {
+        if let path = path["path"] as? String { return path }
+        if let pattern = path["pattern"] as? String { return pattern }
+        if let special = path["value"] as? [String: Any] {
+            let kind = special["kind"] as? String ?? "special path"
+            switch kind {
+            case "project_roots":
+                let subpath = special["subpath"] as? String
+                return subpath.map { "project roots/\($0)" } ?? "project roots"
+            case "unknown":
+                let path = special["path"] as? String ?? "unknown path"
+                let subpath = special["subpath"] as? String
+                return subpath.map { "\(path)/\($0)" } ?? path
+            default:
+                return kind.replacingOccurrences(of: "_", with: " ")
+            }
+        }
+        return cwd ?? "requested path"
     }
 
     private func approvalDate(_ params: [String: Any]) -> Date {
@@ -495,7 +818,6 @@ final class RemoteCodexService {
     private let client = CodexAppServerClient.shared
     private let ssh = SSHManager.shared
     private var activeTurnIDs: [String: String] = [:]
-    private var voiceCapture: WatchVoiceCapture?
 
     private init() {}
 
@@ -513,8 +835,20 @@ final class RemoteCodexService {
         client.onNotification = handler
     }
 
-    func respondToApproval(id: String, approve: Bool) async throws {
-        try await client.respondToApproval(id: id, approve: approve)
+    func respondToApproval(
+        id: String,
+        approve: Bool,
+        permissionScope: String = "turn",
+        answers: [String: [String]] = [:],
+        elicitationContent: [String: Any] = [:]
+    ) async throws {
+        try await client.respondToApproval(
+            id: id,
+            approve: approve,
+            permissionScope: permissionScope,
+            answers: answers,
+            elicitationContent: elicitationContent
+        )
     }
 
     func listThreads() async throws -> [AgentThread] {
@@ -551,8 +885,7 @@ final class RemoteCodexService {
     func createThread(title: String, cwd: String? = nil) async throws -> AgentThread {
         var params: [String: Any] = [
             "sandbox": "workspace-write",
-            "approvalPolicy": "on-request",
-            "historyMode": "paginated"
+            "approvalPolicy": "on-request"
         ]
         let cleanCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !cleanCWD.isEmpty {
@@ -576,9 +909,6 @@ final class RemoteCodexService {
             approvalPolicy: .onRequest,
             sandboxPolicy: .workspaceWrite
         )
-        if let model = response["model"] as? String, !model.isEmpty {
-            named.activeModel = model
-        }
         if named.cwd == nil, !cleanCWD.isEmpty {
             named.cwd = cleanCWD
         }
@@ -614,7 +944,10 @@ final class RemoteCodexService {
             for entry in entries {
                 guard let item = entry["item"] as? [String: Any],
                       let type = item["type"] as? String else { continue }
-                appendMessage(from: item, type: type, to: &messages, seenItemIDs: &seenItemIDs)
+                let startedAtMs = (entry["startedAtMs"] as? NSNumber)
+                    ?? (item["startedAtMs"] as? NSNumber)
+                let timestamp = startedAtMs.map { Date(timeIntervalSince1970: $0.doubleValue / 1_000) }
+                appendMessage(from: item, type: type, timestamp: timestamp, to: &messages, seenItemIDs: &seenItemIDs)
             }
             pageCount += 1
 
@@ -642,7 +975,9 @@ final class RemoteCodexService {
         for turn in turns {
             for item in turn["items"] as? [[String: Any]] ?? [] {
                 guard let type = item["type"] as? String else { continue }
-                appendMessage(from: item, type: type, to: &messages, seenItemIDs: &seenItemIDs)
+                let timestamp = (item["startedAtMs"] as? NSNumber)
+                    .map { Date(timeIntervalSince1970: $0.doubleValue / 1_000) }
+                appendMessage(from: item, type: type, timestamp: timestamp, to: &messages, seenItemIDs: &seenItemIDs)
             }
         }
         return messages
@@ -651,6 +986,7 @@ final class RemoteCodexService {
     private func appendMessage(
         from item: [String: Any],
         type: String,
+        timestamp: Date?,
         to messages: inout [ThreadMessage],
         seenItemIDs: inout Set<String>
     ) {
@@ -671,7 +1007,7 @@ final class RemoteCodexService {
         }
         guard !content.isEmpty else { return }
         let id = UUID(uuidString: itemID) ?? UUID()
-        messages.append(ThreadMessage(id: id, sender: sender, content: content, timestamp: Date()))
+        messages.append(ThreadMessage(id: id, sender: sender, content: content, timestamp: timestamp ?? Date()))
     }
 
     func loadModels() async throws -> [ModelOption] {
@@ -685,44 +1021,12 @@ final class RemoteCodexService {
             let name = model["displayName"] as? String ?? id
             let reasoningEfforts = (model["supportedReasoningEfforts"] as? [[String: Any]] ?? [])
                 .compactMap { $0["reasoningEffort"] as? String }
-            let supportsPersonality = model["supportsPersonality"] as? Bool ?? false
             return ModelOption(
                 id: id,
                 name: name,
-                reasoningEfforts: reasoningEfforts,
-                supportsPersonality: supportsPersonality
+                reasoningEfforts: reasoningEfforts
             )
         }
-    }
-
-    func updateThreadModel(_ threadID: String, modelID: String) async throws {
-        var params: [String: Any] = ["threadId": threadID]
-        if modelID == "default" {
-            params["model"] = NSNull()
-        } else {
-            params["model"] = modelID
-        }
-        _ = try await client.request("thread/settings/update", params: params)
-    }
-
-    func updateThreadSettings(_ threadID: String, settings: ThreadSettings) async throws {
-        let params: [String: Any] = [
-            "threadId": threadID,
-            "effort": settings.reasoningEffort ?? NSNull(),
-            "personality": settings.personality.serverValue ?? NSNull(),
-            "approvalPolicy": settings.approvalPolicy.rawValue,
-            "sandboxPolicy": settings.sandboxPolicy.serverValue ?? NSNull(),
-            "summary": settings.reasoningSummary.serverValue ?? NSNull()
-        ]
-        _ = try await client.request("thread/settings/update", params: params)
-    }
-
-    func updateThreadFolder(_ threadID: String, cwd: String?) async throws {
-        let cleanCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        _ = try await client.request("thread/settings/update", params: [
-            "threadId": threadID,
-            "cwd": cleanCWD.isEmpty ? NSNull() : cleanCWD
-        ])
     }
 
     func loadGoal(threadID: String) async throws -> AgentThreadGoal? {
@@ -739,6 +1043,7 @@ final class RemoteCodexService {
     ) async throws -> AgentThreadGoal? {
         var params: [String: Any] = [
             "threadId": threadID,
+            "origin": "user",
             "objective": objective,
             "status": status.rawValue
         ]
@@ -749,7 +1054,10 @@ final class RemoteCodexService {
     }
 
     func clearGoal(threadID: String) async throws {
-        _ = try await client.request("thread/goal/clear", params: ["threadId": threadID])
+        _ = try await client.request("thread/goal/clear", params: [
+            "threadId": threadID,
+            "origin": "user"
+        ])
     }
 
     func archiveThread(_ threadID: String) async throws {
@@ -770,88 +1078,58 @@ final class RemoteCodexService {
         ])
     }
 
-    func startVoiceTranscription(threadID: String) async throws {
-        guard await WatchVoiceCapture.requestPermission() else {
-            throw CodexAppServerError.invalidResponse("Microphone access was denied.")
-        }
-        _ = try await client.request("thread/resume", params: [
-            "threadId": threadID,
-            "excludeTurns": true
-        ])
-        _ = try await client.request("thread/realtime/start", params: [
-            "threadId": threadID,
-            "outputModality": "text",
-            "transport": ["type": "websocket"]
-        ])
-
-        let capture = WatchVoiceCapture()
-        capture.onAudio = { [weak self] data, sampleRate, channels, frameCount in
-            guard !data.isEmpty else { return }
-            Task { @MainActor [weak self] in
-                try? await self?.appendVoiceAudio(
-                    threadID: threadID,
-                    data: data,
-                    sampleRate: sampleRate,
-                    channels: channels,
-                    frameCount: frameCount
-                )
-            }
-        }
-        do {
-            try capture.start()
-            voiceCapture = capture
-        } catch {
-            _ = try? await client.request("thread/realtime/stop", params: ["threadId": threadID])
-            throw error
-        }
-    }
-
-    func stopVoiceTranscription(threadID: String) async throws {
-        voiceCapture?.stop()
-        voiceCapture = nil
-        _ = try await client.request("thread/realtime/stop", params: ["threadId": threadID])
-    }
-
-    private func appendVoiceAudio(
-        threadID: String,
-        data: Data,
-        sampleRate: Int,
-        channels: Int,
-        frameCount: Int
-    ) async throws {
-        _ = try await client.request("thread/realtime/appendAudio", params: [
-            "threadId": threadID,
-            "audio": [
-                "data": data.base64EncodedString(),
-                "sampleRate": sampleRate,
-                "numChannels": channels,
-                "samplesPerChannel": frameCount
-            ]
-        ])
-    }
-
     func send(_ prompt: String, thread: AgentThread) async throws -> CodexTurnResult {
+        let requestedCWD = thread.cwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasRequestedCWD = !(requestedCWD?.isEmpty ?? true)
         var resumeParams: [String: Any] = [
             "threadId": thread.id,
-            "excludeTurns": true
+            "excludeTurns": true,
+            "approvalPolicy": thread.settings.approvalPolicy.rawValue
         ]
-        if let cwd = thread.cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty {
-            resumeParams["cwd"] = cwd
+        if hasRequestedCWD, let requestedCWD {
+            resumeParams["cwd"] = requestedCWD
+        } else {
+            resumeParams["cwd"] = NSNull()
         }
-        if thread.activeModel != "default" { resumeParams["model"] = thread.activeModel }
+        if let sandbox = thread.settings.sandboxPolicy.resumeValue {
+            resumeParams["sandbox"] = sandbox
+        } else {
+            resumeParams["sandbox"] = NSNull()
+        }
+        if thread.activeModel == "default" {
+            resumeParams["model"] = NSNull()
+        } else {
+            resumeParams["model"] = thread.activeModel
+        }
         let resumed = try await client.request("thread/resume", params: resumeParams)
         let remoteThread = resumed["thread"] as? [String: Any]
         let sessionID = remoteThread?["sessionId"] as? String ?? thread.codexSessionID ?? thread.id
+        let remoteCWD = (remoteThread?["cwd"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveCWD = hasRequestedCWD ? requestedCWD : (remoteCWD?.isEmpty == false ? remoteCWD : nil)
 
         var turnParams: [String: Any] = [
             "threadId": thread.id,
-            "input": [["type": "text", "text": prompt]],
-            "clientUserMessageId": UUID().uuidString
+            "input": [["type": "text", "text": prompt, "text_elements": []]],
+            "clientUserMessageId": UUID().uuidString,
+            "approvalPolicy": thread.settings.approvalPolicy.rawValue,
+            "summary": thread.settings.reasoningSummary.serverValue
         ]
-        if let cwd = thread.cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty {
-            turnParams["cwd"] = cwd
+        if let sandboxPolicy = thread.settings.sandboxPolicy.turnValue(cwd: effectiveCWD) {
+            turnParams["sandboxPolicy"] = sandboxPolicy
+        } else {
+            turnParams["sandboxPolicy"] = NSNull()
         }
-        if thread.activeModel != "default" { turnParams["model"] = thread.activeModel }
+        if thread.activeModel == "default" {
+            turnParams["model"] = NSNull()
+        } else {
+            turnParams["model"] = thread.activeModel
+        }
+        if let reasoningEffort = thread.settings.reasoningEffort {
+            turnParams["effort"] = reasoningEffort
+        } else {
+            turnParams["effort"] = NSNull()
+        }
+        if let effectiveCWD, !effectiveCWD.isEmpty { turnParams["cwd"] = effectiveCWD }
         let started = try await client.request("turn/start", params: turnParams)
         guard let turn = started["turn"] as? [String: Any],
               let turnID = turn["id"] as? String else {

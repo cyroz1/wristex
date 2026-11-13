@@ -13,15 +13,16 @@ public final class ChatViewModel: ObservableObject {
     private let chat = ChatService.shared
 
     public init() {
-        messages = store.load()
-        modelName = chat.model
+        messages = ScreenshotMode.isEnabled ? ScreenshotFixtures.chatMessages : store.load()
+        modelName = ScreenshotMode.isEnabled ? "GPT-5 mini" : chat.model
     }
 
     public var isConfigured: Bool {
-        chat.isConfigured
+        ScreenshotMode.isEnabled || chat.isConfigured
     }
 
     public func refreshConfiguration() {
+        guard !ScreenshotMode.isEnabled else { return }
         modelName = chat.model
     }
 
@@ -66,6 +67,10 @@ public final class ChatViewModel: ObservableObject {
         store.clear()
         errorMessage = nil
         HapticManager.shared.playClick()
+    }
+
+    public func clearError() {
+        errorMessage = nil
     }
 
     public func startVoiceTranscription() async -> Bool {

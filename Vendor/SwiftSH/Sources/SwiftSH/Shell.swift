@@ -139,6 +139,13 @@ public class SSHShell: SSHChannel {
                     self.session.log.error("[ERR] \(error)")
                 }
 
+                // Detect closure before dispatching callbacks so the data
+                // callback can receive a final nil/nil event after any
+                // buffered stdout or stderr bytes.
+                let receivedEOF = self.channel.receivedEOF
+                let socketClosed = (response == nil && error == nil)
+                let channelClosed = receivedEOF || socketClosed
+
                 // Call the callbacks
                 if let callback = self.readStringCallback {
                     self.session.queue.callbackQueue.async {
@@ -155,16 +162,21 @@ public class SSHShell: SSHChannel {
                         callback(responseString, errorString)
                     }
                 }
-                if let callback = self.readDataCallback, response != nil || error != nil {
-                    self.session.queue.callbackQueue.async {
-                        callback(response, error)
+                if let callback = self.readDataCallback {
+                    if response != nil || error != nil {
+                        self.session.queue.callbackQueue.async {
+                            callback(response, error)
+                        }
+                    }
+                    if channelClosed {
+                        self.session.queue.callbackQueue.async {
+                            callback(nil, nil)
+                        }
                     }
                 }
 
                 // Check if the host has closed the channel
-                let receivedEOF = self.channel.receivedEOF
-                let socketClosed = (response == nil && error == nil)
-                if receivedEOF || socketClosed {
+                if channelClosed {
                     if receivedEOF {
                         self.session.log.info("Received EOF")
                     } else if socketClosed {

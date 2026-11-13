@@ -6,7 +6,11 @@ public struct ThreadListView: View {
     @State private var newThreadTitle = ""
     @State private var newThreadFolder = ""
     
-    public init() {}
+    public init(screenshotNewThread: Bool = false) {
+        _showingNewThreadAlert = State(initialValue: screenshotNewThread)
+        _newThreadTitle = State(initialValue: screenshotNewThread ? "Review the Watch release" : "")
+        _newThreadFolder = State(initialValue: screenshotNewThread ? ScreenshotFixtures.workspacePath : "")
+    }
     
     public var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +28,7 @@ public struct ThreadListView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 Button {
+                    newThreadFolder = SSHManager.shared.remoteWorkspacePath
                     showingNewThreadAlert = true
                 } label: {
                     Image(systemName: "plus")
@@ -69,6 +74,14 @@ public struct ThreadListView: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundColor(.indigo)
+                        NavigationLink {
+                            SettingsView()
+                        } label: {
+                            Label("SSH Settings", systemImage: "network")
+                                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
@@ -141,9 +154,12 @@ public struct ThreadListView: View {
 
                     TextField("Thread name", text: $newThreadTitle)
                         .autocorrectionDisabled()
-                    TextField("Project folder (optional)", text: $newThreadFolder)
+                    TextField("Project folder", text: $newThreadFolder)
                         .autocorrectionDisabled()
                         .font(.caption)
+                    Text("Defaults to Settings. Clear for no folder.")
+                        .font(.system(size: 8, design: .rounded))
+                        .foregroundColor(.secondary)
 
                     HStack(spacing: 8) {
                         Button("Cancel") {

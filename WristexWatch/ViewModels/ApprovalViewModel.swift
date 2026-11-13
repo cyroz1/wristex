@@ -10,9 +10,14 @@ public final class ApprovalViewModel: ObservableObject {
     private let codex = RemoteCodexService.shared
     private var pollingTask: Task<Void, Never>?
 
-    public init() {}
+    public init() {
+        if ScreenshotMode.isEnabled {
+            approvals = ScreenshotFixtures.approvals
+        }
+    }
 
     public func loadApprovals() async {
+        guard !ScreenshotMode.isEnabled else { return }
         isLoading = true
         errorMessage = nil
         do {
@@ -24,21 +29,38 @@ public final class ApprovalViewModel: ObservableObject {
         isLoading = false
     }
 
-    public func respond(id: String, approve: Bool) async {
+    @discardableResult
+    public func respond(
+        id: String,
+        approve: Bool,
+        permissionScope: String = "turn",
+        answers: [String: [String]] = [:],
+        elicitationContent: [String: Any] = [:]
+    ) async -> Bool {
         isLoading = true
         errorMessage = nil
         do {
-            try await codex.respondToApproval(id: id, approve: approve)
+            try await codex.respondToApproval(
+                id: id,
+                approve: approve,
+                permissionScope: permissionScope,
+                answers: answers,
+                elicitationContent: elicitationContent
+            )
             approvals.removeAll { $0.id == id }
             approve ? HapticManager.shared.playSuccess() : HapticManager.shared.playFailure()
+            isLoading = false
+            return true
         } catch {
             errorMessage = error.localizedDescription
             HapticManager.shared.playFailure()
+            isLoading = false
+            return false
         }
-        isLoading = false
     }
 
     public func startPolling() {
+        guard !ScreenshotMode.isEnabled else { return }
         stopPolling()
         codex.setApprovalHandler { [weak self] request in
             guard let self else { return }
